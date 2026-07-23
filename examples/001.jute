@@ -1,0 +1,26 @@
+
+
+simple:
+  in app/server:
+    cargo install
+
+
+with-dir:
+  in app/server:
+    pnpm run build
+
+
+clean:
+  in packages/shared:
+    pnpm run clean
+
+  in app/client:
+    pnpm run clean
+
+test-create-db:
+  createdb test_db && psql -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+
+test-migrate:
+  jute test-create-db
+  with NODE_ENV=test:
+    pnpm exec migrate
