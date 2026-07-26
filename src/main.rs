@@ -2,8 +2,11 @@ use crate::cli_args::CliArgs;
 use crate::project_root::find_project_root;
 use std::{env, process};
 
+mod ast;
 mod cli_args;
+mod parser;
 mod project_root;
+mod tokeniser;
 
 fn main() {
     // parse CLI args
