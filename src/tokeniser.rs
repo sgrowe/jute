@@ -2,7 +2,7 @@ use std::{iter::Peekable, str::CharIndices};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Token<'a> {
-    Space,
+    Spaces(usize),
     NewLine,
     Colon,
     With,
@@ -35,27 +35,35 @@ impl<'a> Tokeniser<'a> {
         }
     }
 
-    pub fn cheeky_peek(&mut self) -> Option<(usize, char)> {
-        self.chars.peek().copied()
+    pub fn peek_next_index(&mut self) -> usize {
+        self.chars.peek().map_or(self.source.len(), |(i, _)| *i)
     }
 
-    pub fn peek_next_index(&mut self) -> usize {
-        self.cheeky_peek().map_or(self.source.len(), |(i, _)| i)
+    pub fn peek_next_char(&mut self) -> Option<char> {
+        self.chars.peek().map(|(_, c)| *c)
     }
 
     pub fn handle_char(&mut self, c: char, index: usize) -> Token<'a> {
         match c {
             '\n' | '\r' => Token::NewLine,
-            ' ' => Token::Space,
+            ' ' => {
+                let mut count = 1;
+
+                while self.peek_next_char().map_or(false, |c| c == ' ') {
+                    count += 1;
+                    self.chars.next();
+                }
+
+                Token::Spaces(count)
+            }
             ':' => Token::Colon,
             '=' => Token::Equals,
             _ => {
                 let mut end_index = self.peek_next_index();
 
                 while self
-                    .cheeky_peek()
-                    .map(|(_, c)| !c.is_whitespace() && c != ':' && c != '=')
-                    .unwrap_or_default()
+                    .peek_next_char()
+                    .map_or(false, |c| !c.is_whitespace() && c != ':' && c != '=')
                 {
                     self.chars.next();
 
@@ -101,9 +109,9 @@ mod tests {
             //  3: simple:
             Word("simple"), Colon, NewLine,
             //  4:   in app/server:
-            Space, Space, In, Space, Word("app/server"), Colon, NewLine,
+            Spaces(2), In, Spaces(1), Word("app/server"), Colon, NewLine,
             //  5:     cargo install
-            Space, Space, Space, Space, Word("cargo"), Space, Word("install"), NewLine,
+            Spaces(4), Word("cargo"), Spaces(1), Word("install"), NewLine,
             //  6:
             NewLine,
             //  7:
@@ -111,10 +119,9 @@ mod tests {
             //  8: with-dir:
             Word("with-dir"), Colon, NewLine,
             //  9:   in app/server:
-            Space, Space, In, Space, Word("app/server"), Colon, NewLine,
+            Spaces(2), In, Spaces(1), Word("app/server"), Colon, NewLine,
             // 10:     pnpm run build
-            Space, Space, Space, Space, Word("pnpm"), Space, Word("run"), Space,
-            Word("build"), NewLine,
+            Spaces(4), Word("pnpm"), Spaces(1), Word("run"), Spaces(1), Word("build"), NewLine,
             // 11:
             NewLine,
             // 12:
@@ -122,37 +129,35 @@ mod tests {
             // 13: clean:
             Word("clean"), Colon, NewLine,
             // 14:   in packages/shared:
-            Space, Space, In, Space, Word("packages/shared"), Colon, NewLine,
+            Spaces(2), In, Spaces(1), Word("packages/shared"), Colon, NewLine,
             // 15:     pnpm run clean
-            Space, Space, Space, Space, Word("pnpm"), Space, Word("run"), Space,
-            Word("clean"), NewLine,
+            Spaces(4), Word("pnpm"), Spaces(1), Word("run"), Spaces(1), Word("clean"), NewLine,
             // 16:
             NewLine,
             // 17:   in app/client:
-            Space, Space, In, Space, Word("app/client"), Colon, NewLine,
+            Spaces(2), In, Spaces(1), Word("app/client"), Colon, NewLine,
             // 18:     pnpm run clean
-            Space, Space, Space, Space, Word("pnpm"), Space, Word("run"), Space,
-            Word("clean"), NewLine,
+            Spaces(4), Word("pnpm"), Spaces(1), Word("run"), Spaces(1), Word("clean"), NewLine,
             // 19:
             NewLine,
             // 20: test-create-db:
             Word("test-create-db"), Colon, NewLine,
             // 21:   createdb test_db && psql -c 'CREATE EXTENSION IF NOT EXISTS vector;'
-            Space, Space, Word("createdb"), Space, Word("test_db"), Space, Word("&&"), Space,
-            Word("psql"), Space, Word("-c"), Space, Word("'CREATE"), Space, Word("EXTENSION"), Space,
-            Word("IF"), Space, Word("NOT"), Space, Word("EXISTS"), Space, Word("vector;'"), NewLine,
+            Spaces(2), Word("createdb"), Spaces(1), Word("test_db"), Spaces(1), Word("&&"), Spaces(1),
+            Word("psql"), Spaces(1), Word("-c"), Spaces(1), Word("'CREATE"), Spaces(1), Word("EXTENSION"),
+            Spaces(1), Word("IF"), Spaces(1), Word("NOT"), Spaces(1), Word("EXISTS"), Spaces(1),
+            Word("vector;'"), NewLine,
             // 22:
             NewLine,
             // 23: test-migrate:
             Word("test-migrate"), Colon, NewLine,
             // 24:   jute test-create-db
-            Space, Space, Word("jute"), Space, Word("test-create-db"), NewLine,
+            Spaces(2), Word("jute"), Spaces(1), Word("test-create-db"), NewLine,
             // 25:   with NODE_ENV=test:
-            Space, Space, With, Space, Word("NODE_ENV"), Equals, Word("test"), Colon,
+            Spaces(2), With, Spaces(1), Word("NODE_ENV"), Equals, Word("test"), Colon,
             NewLine,
             // 26:     pnpm exec migrate
-            Space, Space, Space, Space, Word("pnpm"), Space, Word("exec"), Space,
-            Word("migrate"), NewLine,
+            Spaces(4), Word("pnpm"), Spaces(1), Word("exec"), Spaces(1), Word("migrate"), NewLine,
         ];
 
         assert_eq!(tokens, expected);
