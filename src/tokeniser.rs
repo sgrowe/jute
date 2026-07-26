@@ -1,8 +1,11 @@
 use std::{iter::Peekable, str::CharIndices};
 
+use crate::tokeniser::Token::{Dedent, Indent};
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Token<'a> {
-    Spaces(usize),
+    Indent,
+    Dedent,
     NewLine,
     Colon,
     With,
@@ -15,13 +18,42 @@ pub enum Token<'a> {
 pub struct Tokeniser<'a> {
     source: &'a str,
     chars: Peekable<CharIndices<'a>>,
+    just_had_new_line: bool,
+    indent_stack: Vec<usize>,
 }
 
 impl<'a> Iterator for Tokeniser<'a> {
     type Item = Token<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.just_had_new_line && self.peek_next_char().map_or(true, |c| !c.is_whitespace()) {
+            if self.indent_stack.pop().is_some() {
+                return Some(Dedent);
+            }
+        }
+
         let (i, c) = self.chars.next()?;
+
+        if self.just_had_new_line && c == ' ' {
+            self.just_had_new_line = false;
+
+            let mut indent = 1;
+            while self.peek_next_char() == Some(' ') {
+                self.chars.next();
+                indent += 1;
+            }
+
+            if let Some('\n' | '\r') = self.peek_next_char() {
+                // ignore blank lines
+                return self.next();
+            }
+
+            if let Some(change) = self.indentation_changed(indent) {
+                return Some(change);
+            }
+
+            return self.next();
+        }
 
         Some(self.handle_char(c, i))
     }
@@ -32,6 +64,24 @@ impl<'a> Tokeniser<'a> {
         Self {
             source,
             chars: source.char_indices().peekable(),
+            just_had_new_line: true,
+            indent_stack: Vec::new(),
+        }
+    }
+
+    pub fn indentation_changed(&mut self, new_indent: usize) -> Option<Token<'static>> {
+        let prev = self.indent_stack.last().copied().unwrap_or_default();
+
+        if new_indent == prev {
+            return None;
+        }
+
+        if new_indent > prev {
+            self.indent_stack.push(new_indent);
+            return Some(Indent);
+        } else {
+            self.indent_stack.pop();
+            return Some(Dedent);
         }
     }
 
@@ -44,17 +94,12 @@ impl<'a> Tokeniser<'a> {
     }
 
     pub fn handle_char(&mut self, c: char, index: usize) -> Token<'a> {
+        self.just_had_new_line = false;
+
         match c {
-            '\n' | '\r' => Token::NewLine,
-            ' ' => {
-                let mut count = 1;
-
-                while self.peek_next_char().map_or(false, |c| c == ' ') {
-                    count += 1;
-                    self.chars.next();
-                }
-
-                Token::Spaces(count)
+            '\n' | '\r' => {
+                self.just_had_new_line = true;
+                Token::NewLine
             }
             ':' => Token::Colon,
             '=' => Token::Equals,
@@ -63,18 +108,20 @@ impl<'a> Tokeniser<'a> {
 
                 while self
                     .peek_next_char()
-                    .map_or(false, |c| !c.is_whitespace() && c != ':' && c != '=')
+                    .map_or(false, |c| !['\n', '\r', ':', '='].contains(&c))
                 {
                     self.chars.next();
 
                     end_index = self.peek_next_index();
+
+                    match &self.source[index..end_index] {
+                        "with " => return Token::With,
+                        "in " => return Token::In,
+                        _ => {}
+                    }
                 }
 
-                match &self.source[index..end_index] {
-                    "with" => Token::With,
-                    "in" => Token::In,
-                    word => Token::Word(word),
-                }
+                Token::Word(&self.source[index..end_index])
             }
         }
     }
@@ -109,55 +156,53 @@ mod tests {
             //  3: simple:
             Word("simple"), Colon, NewLine,
             //  4:   in app/server:
-            Spaces(2), In, Spaces(1), Word("app/server"), Colon, NewLine,
+            Indent, In, Word("app/server"), Colon, NewLine,
             //  5:     cargo install
-            Spaces(4), Word("cargo"), Spaces(1), Word("install"), NewLine,
+            Indent, Word("cargo install"), NewLine,
             //  6:
             NewLine,
             //  7:
             NewLine,
             //  8: with-dir:
-            Word("with-dir"), Colon, NewLine,
+            Dedent, Dedent, Word("with-dir"), Colon, NewLine,
             //  9:   in app/server:
-            Spaces(2), In, Spaces(1), Word("app/server"), Colon, NewLine,
+            Indent, In, Word("app/server"), Colon, NewLine,
             // 10:     pnpm run build
-            Spaces(4), Word("pnpm"), Spaces(1), Word("run"), Spaces(1), Word("build"), NewLine,
+            Indent, Word("pnpm run build"), NewLine,
             // 11:
             NewLine,
             // 12:
             NewLine,
             // 13: clean:
-            Word("clean"), Colon, NewLine,
+            Dedent, Dedent, Word("clean"), Colon, NewLine,
             // 14:   in packages/shared:
-            Spaces(2), In, Spaces(1), Word("packages/shared"), Colon, NewLine,
+            Indent, In, Word("packages/shared"), Colon, NewLine,
             // 15:     pnpm run clean
-            Spaces(4), Word("pnpm"), Spaces(1), Word("run"), Spaces(1), Word("clean"), NewLine,
+            Indent, Word("pnpm run clean"), NewLine,
             // 16:
             NewLine,
             // 17:   in app/client:
-            Spaces(2), In, Spaces(1), Word("app/client"), Colon, NewLine,
+            Dedent, In, Word("app/client"), Colon, NewLine,
             // 18:     pnpm run clean
-            Spaces(4), Word("pnpm"), Spaces(1), Word("run"), Spaces(1), Word("clean"), NewLine,
+            Indent, Word("pnpm run clean"), NewLine,
             // 19:
             NewLine,
             // 20: test-create-db:
-            Word("test-create-db"), Colon, NewLine,
+            Dedent, Dedent, Word("test-create-db"), Colon, NewLine,
             // 21:   createdb test_db && psql -c 'CREATE EXTENSION IF NOT EXISTS vector;'
-            Spaces(2), Word("createdb"), Spaces(1), Word("test_db"), Spaces(1), Word("&&"), Spaces(1),
-            Word("psql"), Spaces(1), Word("-c"), Spaces(1), Word("'CREATE"), Spaces(1), Word("EXTENSION"),
-            Spaces(1), Word("IF"), Spaces(1), Word("NOT"), Spaces(1), Word("EXISTS"), Spaces(1),
-            Word("vector;'"), NewLine,
+            Indent, Word("createdb test_db && psql -c 'CREATE EXTENSION IF NOT EXISTS vector;'"), NewLine,
             // 22:
             NewLine,
             // 23: test-migrate:
-            Word("test-migrate"), Colon, NewLine,
+            Dedent, Word("test-migrate"), Colon, NewLine,
             // 24:   jute test-create-db
-            Spaces(2), Word("jute"), Spaces(1), Word("test-create-db"), NewLine,
+            Indent, Word("jute test-create-db"), NewLine,
             // 25:   with NODE_ENV=test:
-            Spaces(2), With, Spaces(1), Word("NODE_ENV"), Equals, Word("test"), Colon,
-            NewLine,
+            With, Word("NODE_ENV"), Equals, Word("test"), Colon, NewLine,
             // 26:     pnpm exec migrate
-            Spaces(4), Word("pnpm"), Spaces(1), Word("exec"), Spaces(1), Word("migrate"), NewLine,
+            Indent, Word("pnpm exec migrate"), NewLine,
+            // end of file: close the two blocks still open
+            Dedent, Dedent,
         ];
 
         assert_eq!(tokens, expected);
