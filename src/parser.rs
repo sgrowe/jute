@@ -1,4 +1,4 @@
-use std::iter::Peekable;
+use std::{borrow::Cow, iter::Peekable};
 
 use crate::{
     ast::{Step, Task, TaskFile},
@@ -7,7 +7,18 @@ use crate::{
 
 #[derive(Debug)]
 pub struct ParseError {
-    message: String,
+    message: Cow<'static, str>,
+}
+
+impl ParseError {
+    pub fn new<S>(msg: S) -> Self
+    where
+        S: Into<Cow<'static, str>>,
+    {
+        Self {
+            message: msg.into(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -44,76 +55,81 @@ impl<'a> Parser<'a> {
 
         self.expect_next_token_to_be(Token::Colon)?;
         self.expect_next_token_to_be(Token::NewLine)?;
+        self.expect_next_token_to_be(Token::Indent)?;
 
-        while let Some(step) = self.step(0)? {
+        while let Some(step) = self.step(1)? {
             steps.push(step);
         }
 
         if steps.is_empty() {
-            return Err(ParseError {
-                message: format!("Task {name} should have at least one step"),
-            });
+            return Err(ParseError::new(format!(
+                "Task {name} should have at least one step"
+            )));
         }
 
         Ok(Task::new(name, steps))
     }
 
-    fn step(&mut self, prev_indent: usize) -> Result<Option<Step<'a>>, ParseError> {
-        let indentation = match self.tokens.peek() {
-            Some(Token::Spaces(indentation)) if *indentation > prev_indent => *indentation,
-            _ => return Ok(None),
-        };
+    fn step(&mut self, indent_level: usize) -> Result<Option<Step<'a>>, ParseError> {
+        let token = self.tokens.next();
 
-        self.tokens.next();
-
-        self.step_line(indentation).map(Some)
+        match token {
+            None | Some(Token::NewLine) => Ok(None),
+            Some(Token::With) => self.with_step(indent_level).map(Some),
+            Some(Token::In) => self.in_step(indent_level).map(Some),
+            Some(Token::Word(w)) => self.command(w).map(Some),
+            Some(Token::Colon) | Some(Token::Equals) => Err(ParseError::new(format!(
+                "Unexpected token when parsing a step: {token:?}"
+            ))),
+            Some(Token::Indent) | Some(Token::Dedent) => Err(ParseError::new(
+                "BUG! Parser got confused by indentation, please report the file that caused this bug",
+            )),
+        }
     }
 
-    fn step_line(&mut self, prev_indent: usize) -> Result<Step<'a>, ParseError> {
-        let mut line = String::new();
-
-        let mut is_first_token = true;
+    fn command(&mut self, first_word: &'a str) -> Result<Step<'a>, ParseError> {
+        let mut line = first_word.to_string(); // TODO: ideally make a Cow if possible
 
         loop {
-            match self.tokens.next() {
+            let token = self.tokens.next();
+
+            match token {
                 Some(Token::NewLine) | None => return Ok(Step::Command(line.into())),
                 Some(Token::With) => {
-                    if is_first_token {
-                        self.with_step(prev_indent)
-                    } else {
-                        line.push_str("with");
-                    }
+                    line.push_str("with");
                 }
                 Some(Token::In) => {
-                    if is_first_token {
-                        self.in_step(prev_indent)
-                    } else {
-                        line.push_str("in");
-                    }
+                    line.push_str("in");
                 }
                 Some(Token::Word(w)) => {
                     line.push_str(w);
                 }
                 Some(Token::Colon) => line.push(':'),
                 Some(Token::Equals) => line.push('='),
-                Some(Token::Spaces(n)) => {
-                    for _ in 0..n {
-                        line.push(' ');
-                    }
+                Some(Token::Indent) | Some(Token::Dedent) => {
+                    return Err(ParseError::new(
+                        "BUG! Parser got confused by indentation, please report the file that caused this bug",
+                    ));
                 }
             }
         }
     }
 
+    fn with_step(&mut self, indent_level: usize) -> Result<Step<'a>, ParseError> {
+        todo!()
+    }
+
+    fn in_step(&mut self, indent_level: usize) -> Result<Step<'a>, ParseError> {
+        todo!()
+    }
+
     fn expect_next_token_to_be(&mut self, expected: Token<'a>) -> Result<Token<'a>, ParseError> {
         match self.tokens.next() {
             Some(t) if t == expected => Ok(t),
-            Some(t) => Err(ParseError {
-                message: format!("Expected {expected:?}, got {t:?}"),
-            }),
-            None => Err(ParseError {
-                message: format!("Expected {expected:?} but reached end of the file"),
-            }),
+            Some(t) => Err(ParseError::new(format!("Expected {expected:?}, got {t:?}"))),
+            None => Err(ParseError::new(format!(
+                "Expected {expected:?} but reached end of the file"
+            ))),
         }
     }
 }
@@ -151,7 +167,7 @@ mod tests {
                     "simple",
                     vec![Step::InSubDir {
                         path: PathBuf::from("app/server"),
-                        steps: vec![Step::Command("cargo install")],
+                        steps: vec![Step::Command("cargo install".into())],
                     }],
                 ),
                 // with-dir:
@@ -161,7 +177,7 @@ mod tests {
                     "with-dir",
                     vec![Step::InSubDir {
                         path: PathBuf::from("app/server"),
-                        steps: vec![Step::Command("pnpm run build")],
+                        steps: vec![Step::Command("pnpm run build".into())],
                     }],
                 ),
                 // clean:
@@ -175,11 +191,11 @@ mod tests {
                     vec![
                         Step::InSubDir {
                             path: PathBuf::from("packages/shared"),
-                            steps: vec![Step::Command("pnpm run clean")],
+                            steps: vec![Step::Command("pnpm run clean".into())],
                         },
                         Step::InSubDir {
                             path: PathBuf::from("app/client"),
-                            steps: vec![Step::Command("pnpm run clean")],
+                            steps: vec![Step::Command("pnpm run clean".into())],
                         },
                     ],
                 ),
@@ -187,9 +203,7 @@ mod tests {
                 //   createdb test_db && psql -c 'CREATE EXTENSION IF NOT EXISTS vector;'
                 Task::new(
                     "test-create-db",
-                    vec![Step::Command(
-                        "createdb test_db && psql -c 'CREATE EXTENSION IF NOT EXISTS vector;'",
-                    )],
+                    vec![Step::Command("createdb test_db && psql -c 'CREATE EXTENSION IF NOT EXISTS vector;'".into())],
                 ),
                 // test-migrate:
                 //   jute test-create-db
@@ -198,10 +212,10 @@ mod tests {
                 Task::new(
                     "test-migrate",
                     vec![
-                        Step::Command("jute test-create-db"),
+                        Step::Command("jute test-create-db".into()),
                         Step::With {
                             env: vec![EnvVar::new("NODE_ENV", "test")],
-                            steps: vec![Step::Command("pnpm exec migrate")],
+                            steps: vec![Step::Command("pnpm exec migrate".into())],
                         },
                     ],
                 ),
