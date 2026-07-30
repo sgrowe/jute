@@ -55,10 +55,14 @@ impl<'a> Parser<'a> {
 
         while let Some(token) = self.tokens.next() {
             match token {
-                Token::NewLine => {}
-                Token::Word(name) => file.tasks.push(self.task(name)?),
+                Token::NewLine | Token::Spaces(_) => {}
                 Token::Indent | Token::Dedent => return Err(ParseError::indentation()),
-                t => return Err(ParseError::new(format!("Expected a task name, got {t:?}"))),
+                t => match Self::token_text(t) {
+                    Some(name) => file.tasks.push(self.task(name)?),
+                    None => {
+                        return Err(ParseError::new(format!("Expected a task name, got {t:?}")));
+                    }
+                },
             }
         }
 
@@ -66,7 +70,18 @@ impl<'a> Parser<'a> {
     }
 
     fn task(&mut self, name: &'a str) -> Result<Task<'a>, ParseError> {
+        self.skip_spaces();
+
+        // A task is invoked as `jute <name>`, so a name holding a space would
+        // be ambiguous on the command line.
+        if self.peek_word().is_some() {
+            return Err(ParseError::new(format!(
+                "Task names cannot contain spaces, so `{name}` should be one word"
+            )));
+        }
+
         self.expect_next_token_to_be(Token::Colon)?;
+        self.skip_spaces();
         self.expect_next_token_to_be(Token::NewLine)?;
 
         let steps = self.block(&format!("Task {name}"))?;
@@ -138,10 +153,10 @@ impl<'a> Parser<'a> {
 
             match token {
                 Some(Token::NewLine) | None => return Ok(Step::Command(line)),
-                // `with `/`in ` keep the space the tokeniser matched them on
-                Some(Token::With) => line.to_mut().push_str("with "),
-                Some(Token::In) => line.to_mut().push_str("in "),
+                Some(Token::With) => line.to_mut().push_str("with"),
+                Some(Token::In) => line.to_mut().push_str("in"),
                 Some(Token::Word(w)) => line.to_mut().push_str(w),
+                Some(Token::Spaces(n)) => line.to_mut().extend(std::iter::repeat_n(' ', n)),
                 Some(Token::Colon) => line.to_mut().push(':'),
                 Some(Token::Equals) => line.to_mut().push('='),
                 Some(Token::Indent) | Some(Token::Dedent) => {
@@ -152,33 +167,36 @@ impl<'a> Parser<'a> {
     }
 
     /// `with NAME=value [NAME=value ...]:` followed by a block.
+    ///
+    /// A space always separates one variable from the next, as it does in
+    /// `env A=1 B=2 cmd`, so a value cannot itself contain one.
     fn with_step(&mut self) -> Result<Step<'a>, ParseError> {
         let mut env = Vec::new();
-        let mut name = self.env_var_word("Expected an environment variable name after `with`")?;
 
         loop {
+            self.skip_spaces();
+
+            let name = self.next_word("Expected an environment variable name after `with`")?;
+
             self.expect_next_token_to_be(Token::Equals)?;
 
-            let value = self.env_var_word(&format!("Expected a value for `{name}`"))?;
+            let value = self.next_word(&format!("Expected a value for `{name}`"))?;
 
-            // `A=1 B=2` tokenises as `A`, `=`, `1 B`, `=`, `2`, so another
-            // `=` means that word held this value *and* the next name.
-            if self.tokens.peek() != Some(&Token::Equals) {
-                env.push(EnvVar::new(name, value));
+            env.push(EnvVar::new(name, value));
+
+            self.skip_spaces();
+
+            // Two words are never adjacent, so a word here was preceded by a
+            // space and starts the next variable. Anything else — a `:`, most
+            // often — ends the list, which makes the spaces just skipped
+            // trailing whitespace.
+            if self.peek_word().is_none() {
                 break;
             }
-
-            let Some((value, next_name)) = value.rsplit_once(char::is_whitespace) else {
-                return Err(ParseError::new(format!(
-                    "Expected a space between environment variables, got `{name}={value}=`"
-                )));
-            };
-
-            env.push(EnvVar::new(name, value.trim()));
-            name = next_name.trim();
         }
 
         self.expect_next_token_to_be(Token::Colon)?;
+        self.skip_spaces();
         self.expect_next_token_to_be(Token::NewLine)?;
 
         let steps = self.block("A `with` block")?;
@@ -186,36 +204,75 @@ impl<'a> Parser<'a> {
         Ok(Step::With { env, steps })
     }
 
-    /// `in <path>:` followed by a block.
+    /// `in <path>:` followed by a block. Everything up to the `:` is the path,
+    /// so a directory whose name holds a space still works.
     fn in_step(&mut self) -> Result<Step<'a>, ParseError> {
-        let path = match self.tokens.next() {
-            Some(Token::Word(w)) => PathBuf::from(w.trim()),
-            t => {
-                return Err(ParseError::new(format!(
-                    "Expected a directory after `in`, got {t:?}"
-                )));
-            }
-        };
+        self.skip_spaces();
+
+        let mut path = String::from(self.next_word("Expected a directory after `in`")?);
+
+        while let Some(Token::Spaces(n)) = self.tokens.next_if(Self::is_spaces) {
+            let Some(word) = self.peek_word() else {
+                // trailing whitespace before the `:`
+                break;
+            };
+
+            self.tokens.next();
+            path.extend(std::iter::repeat_n(' ', n));
+            path.push_str(word);
+        }
 
         self.expect_next_token_to_be(Token::Colon)?;
+        self.skip_spaces();
         self.expect_next_token_to_be(Token::NewLine)?;
 
-        let steps = self.block(&format!("`in {}`", path.display()))?;
+        let steps = self.block(&format!("`in {path}`"))?;
 
-        Ok(Step::InSubDir { path, steps })
+        Ok(Step::InSubDir {
+            path: PathBuf::from(path),
+            steps,
+        })
     }
 
-    /// A `Word` used as an environment variable name or value. The tokeniser
-    /// splits on `=` and `:` without trimming, so `A = 1` keeps its spaces.
-    fn env_var_word(&mut self, expectation: &str) -> Result<&'a str, ParseError> {
-        match self.tokens.next() {
-            Some(Token::Word(w)) => Ok(w.trim()),
-            t => Err(ParseError::new(format!("{expectation}, got {t:?}"))),
+    /// The text of a token that can stand in for a word. `with` and `in` are
+    /// keywords wherever they appear, so they have to be turned back into text
+    /// in the places the grammar wanted a name, a path or a value.
+    fn token_text(token: Token<'a>) -> Option<&'a str> {
+        match token {
+            Token::Word(w) => Some(w),
+            Token::With => Some("with"),
+            Token::In => Some("in"),
+            _ => None,
         }
+    }
+
+    /// The text of the next token, without consuming it, if it can stand in
+    /// for a word.
+    fn peek_word(&mut self) -> Option<&'a str> {
+        self.tokens.peek().copied().and_then(Self::token_text)
+    }
+
+    fn next_word(&mut self, expectation: &str) -> Result<&'a str, ParseError> {
+        let token = self.tokens.next();
+
+        match token.and_then(Self::token_text) {
+            Some(word) => Ok(word),
+            None => Err(ParseError::new(format!("{expectation}, got {token:?}"))),
+        }
+    }
+
+    fn is_spaces(token: &Token<'a>) -> bool {
+        matches!(token, Token::Spaces(_))
     }
 
     fn skip_new_lines(&mut self) {
         while self.tokens.next_if_eq(&Token::NewLine).is_some() {}
+    }
+
+    /// Spaces carry no meaning of their own outside a command, but they are
+    /// still tokens, so every position that ignores them says so.
+    fn skip_spaces(&mut self) {
+        while self.tokens.next_if(Self::is_spaces).is_some() {}
     }
 
     fn expect_next_token_to_be(&mut self, expected: Token<'a>) -> Result<Token<'a>, ParseError> {
@@ -409,12 +466,14 @@ serve:
         assert!(matches!(line, Cow::Owned(_)));
     }
 
+    /// Words are split on spaces, so only a genuinely one-word command reaches
+    /// the parser as a single `Word` and avoids being rebuilt.
     #[test]
     fn borrows_commands_that_need_no_rebuilding() {
         let step = parse_one_step(
             "\
 build:
-  pnpm run build
+  ./build.sh
 ",
         );
 
@@ -422,10 +481,138 @@ build:
             panic!("expected a command, got {step:?}")
         };
 
-        assert_eq!(line, "pnpm run build");
+        assert_eq!(line, "./build.sh");
         assert!(
             matches!(line, Cow::Borrowed(_)),
             "a command that is a single word should borrow from the source"
+        );
+    }
+
+    /// `Spaces` carries its width, so a command survives a round trip through
+    /// the tokeniser byte for byte.
+    #[test]
+    fn rebuilds_commands_containing_runs_of_spaces() {
+        let step = parse_one_step(
+            "\
+fix:
+  sed 's/a   b/c/' file
+",
+        );
+
+        assert_eq!(step, Step::Command("sed 's/a   b/c/' file".into()));
+    }
+
+    /// `in` and `with` are keywords wherever they appear, so a command using
+    /// one as an ordinary word has to be put back together.
+    #[test]
+    fn rebuilds_commands_containing_keywords() {
+        let step = parse_one_step(
+            "\
+list:
+  for f in *.txt; do echo $f; done
+",
+        );
+
+        assert_eq!(
+            step,
+            Step::Command("for f in *.txt; do echo $f; done".into())
+        );
+    }
+
+    #[test]
+    fn parses_a_directory_whose_name_contains_spaces() {
+        let step = parse_one_step(
+            "\
+build:
+  in My Project/server:
+    cargo build
+",
+        );
+
+        assert_eq!(
+            step,
+            Step::InSubDir {
+                path: PathBuf::from("My Project/server"),
+                steps: vec![Step::Command("cargo build".into())],
+            }
+        );
+    }
+
+    /// Spaces around the structural parts of a line carry no meaning.
+    #[test]
+    fn ignores_spaces_around_colons() {
+        let file = parse(
+            "\
+build :
+  with A=1 :
+    in src :
+      cargo build
+",
+        )
+        .expect("spaces before a `:` should be ignored");
+
+        assert_eq!(
+            file.tasks[0].steps,
+            vec![Step::With {
+                env: vec![EnvVar::new("A", "1")],
+                steps: vec![Step::InSubDir {
+                    path: PathBuf::from("src"),
+                    steps: vec![Step::Command("cargo build".into())],
+                }],
+            }]
+        );
+    }
+
+    #[test]
+    fn a_task_name_containing_a_space_is_an_error() {
+        let error = parse(
+            "\
+my task:
+  echo hello
+",
+        )
+        .expect_err("a task name with a space should not parse");
+
+        assert_eq!(
+            error.to_string(),
+            "Task names cannot contain spaces, so `my` should be one word"
+        );
+    }
+
+    /// A space always separates one variable from the next, so there is no way
+    /// for a value to hold one.
+    #[test]
+    fn an_env_var_value_containing_a_space_is_an_error() {
+        let error = parse(
+            "\
+greet:
+  with MSG=hello world:
+    ./greet.sh
+",
+        )
+        .expect_err("an env var value with a space should not parse");
+
+        assert_eq!(error.to_string(), "Expected Equals, got Colon");
+    }
+
+    /// `with` and `in` are keywords, but the parser turns them back into text
+    /// where it wanted a name or a value.
+    #[test]
+    fn keywords_can_be_used_as_env_var_names_and_values() {
+        let step = parse_one_step(
+            "\
+run:
+  with in=with:
+    ./run.sh
+",
+        );
+
+        assert_eq!(
+            step,
+            Step::With {
+                env: vec![EnvVar::new("in", "with")],
+                steps: vec![Step::Command("./run.sh".into())],
+            }
         );
     }
 
