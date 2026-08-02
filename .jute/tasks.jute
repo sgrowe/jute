@@ -1,0 +1,7 @@
+
+
+
+validate:
+    cargo fmt
+    cargo clippy --fix --all-targets --allow-dirty
+    cargo test

@@ -1,8 +1,9 @@
-use crate::ast::Task;
+use crate::ast::{Step, Task};
 use crate::cli_args::{CliArgs, parse_cli_args};
 use crate::parser::parse_tasks_file;
 use crate::project_root::ProjectRoot;
 use std::env;
+use std::process::Command;
 
 mod ast;
 mod cli_args;
@@ -33,8 +34,19 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn run_task(_task: &Task) -> anyhow::Result<()> {
-    unimplemented!()
+fn run_task(Task { name, steps }: &Task) -> anyhow::Result<()> {
+    println!("{name}:");
+
+    for step in steps {
+        if let Step::Command(s) = step {
+            let result = Command::new("bash").arg("-c").arg(s.as_ref()).output()?;
+
+            print!("{}", str::from_utf8(&result.stdout).unwrap());
+            eprint!("{}", str::from_utf8(&result.stderr).unwrap());
+        }
+    }
+
+    Ok(())
 }
 
 fn find_and_read_tasks_file() -> anyhow::Result<String> {

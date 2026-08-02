@@ -5,13 +5,13 @@ the `ast.rs` types by `parser.rs`, and executed from `main.rs`.
 
 ## After making changes
 
-Always run all three, in this order:
+Always run
 
 ```sh
-cargo fmt
-cargo test
-cargo clippy --fix --all-targets --allow-dirty
+cargo run -- validate
 ```
+
+This bootstraps the project and then uses it to run the tests, formatter and clippy (see `.jute/tasks.jute`)
 
 ## Tests
 
