@@ -36,6 +36,10 @@ impl<'a> ProjectRoot<'a> {
         self.root.join(".jute")
     }
 
+    pub fn path(&self) -> &Path {
+        self.root
+    }
+
     pub fn read_tasks_file(&self) -> anyhow::Result<String> {
         let contents = read_to_string(self.jute_dir().join("tasks.jute"))?;
 
