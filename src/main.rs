@@ -2,10 +2,15 @@ use crate::cli_args::CliArgs;
 use crate::project_root::find_project_root;
 use std::{env, process};
 
+// `main` doesn't read or parse the task file yet, so these three modules are
+// only reachable from their own tests. Drop the attributes once it does.
+#[allow(dead_code)]
 mod ast;
 mod cli_args;
+#[allow(dead_code)]
 mod parser;
 mod project_root;
+#[allow(dead_code)]
 mod tokeniser;
 
 fn main() {
