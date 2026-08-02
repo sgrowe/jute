@@ -1,9 +1,18 @@
 use std::{
+    env,
     fs::read_to_string,
     path::{Path, PathBuf},
 };
 
 use anyhow::anyhow;
+
+/// The tasks file for the project the current directory belongs to.
+pub fn find_and_read_tasks_file() -> anyhow::Result<String> {
+    let cwd = env::current_dir()?;
+    let project_root = ProjectRoot::find_project_root_starting_from(&cwd)?;
+
+    project_root.read_tasks_file()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ProjectRoot<'a> {
