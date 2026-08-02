@@ -58,7 +58,9 @@ impl<'a> Parser<'a> {
                 Token::NewLine | Token::Spaces(_) => {}
                 Token::Indent | Token::Dedent => return Err(ParseError::indentation()),
                 t => match Self::token_text(t) {
-                    Some(name) => file.tasks.push(self.task(name)?),
+                    Some(name) => file
+                        .insert_task(self.task(name)?)
+                        .map_err(|e| ParseError::new(e.to_string()))?,
                     None => {
                         return Err(ParseError::new(format!("Expected a task name, got {t:?}")));
                     }
@@ -307,17 +309,16 @@ mod tests {
         Parser::new(Tokeniser::new(source)).parse()
     }
 
-    /// The single step of the single task in `source`.
-    fn parse_one_step(source: &str) -> Step<'_> {
-        let mut tasks = parse(source).expect("source should parse").tasks;
+    /// The `TaskFile` a test expects to see, built through the same public API
+    /// the parser itself uses.
+    fn task_file<'a>(tasks: impl IntoIterator<Item = Task<'a>>) -> TaskFile<'a> {
+        let mut file = TaskFile::default();
 
-        assert_eq!(tasks.len(), 1, "expected exactly one task");
+        for task in tasks {
+            file.insert_task(task).expect("task names should be unique");
+        }
 
-        let steps = tasks.remove(0).steps;
-
-        assert_eq!(steps.len(), 1, "expected exactly one step");
-
-        steps.into_iter().next().unwrap()
+        file
     }
 
     #[test]
@@ -328,118 +329,123 @@ mod tests {
             .parse()
             .expect("001.jute should parse");
 
-        let expected = TaskFile {
-            tasks: vec![
-                // simple:
-                //   in app/server:
-                //     cargo install
-                Task::new(
-                    "simple",
-                    vec![Step::InSubDir {
-                        path: PathBuf::from("app/server"),
-                        steps: vec![Step::Command("cargo install".into())],
-                    }],
-                ),
-                // with-dir:
-                //   in app/server:
-                //     pnpm run build
-                Task::new(
-                    "with-dir",
-                    vec![Step::InSubDir {
-                        path: PathBuf::from("app/server"),
-                        steps: vec![Step::Command("pnpm run build".into())],
-                    }],
-                ),
-                // clean:
-                //   in packages/shared:
-                //     pnpm run clean
-                //
-                //   in app/client:
-                //     pnpm run clean
-                Task::new(
-                    "clean",
-                    vec![
-                        Step::InSubDir {
-                            path: PathBuf::from("packages/shared"),
-                            steps: vec![Step::Command("pnpm run clean".into())],
-                        },
-                        Step::InSubDir {
-                            path: PathBuf::from("app/client"),
-                            steps: vec![Step::Command("pnpm run clean".into())],
-                        },
-                    ],
-                ),
-                // test-create-db:
-                //   createdb test_db && psql -c 'CREATE EXTENSION IF NOT EXISTS vector;'
-                Task::new(
-                    "test-create-db",
-                    vec![Step::Command(
-                        "createdb test_db && psql -c 'CREATE EXTENSION IF NOT EXISTS vector;'"
-                            .into(),
-                    )],
-                ),
-                // test-migrate:
-                //   jute test-create-db
-                //   with NODE_ENV=test:
-                //     pnpm exec migrate
-                Task::new(
-                    "test-migrate",
-                    vec![
-                        Step::Command("jute test-create-db".into()),
-                        Step::With {
-                            env: vec![EnvVar::new("NODE_ENV", "test")],
-                            steps: vec![Step::Command("pnpm exec migrate".into())],
-                        },
-                    ],
-                ),
-            ],
-        };
+        let expected = task_file([
+            // simple:
+            //   in app/server:
+            //     cargo install
+            Task::new(
+                "simple",
+                vec![Step::InSubDir {
+                    path: PathBuf::from("app/server"),
+                    steps: vec![Step::Command("cargo install".into())],
+                }],
+            ),
+            // with-dir:
+            //   in app/server:
+            //     pnpm run build
+            Task::new(
+                "with-dir",
+                vec![Step::InSubDir {
+                    path: PathBuf::from("app/server"),
+                    steps: vec![Step::Command("pnpm run build".into())],
+                }],
+            ),
+            // clean:
+            //   in packages/shared:
+            //     pnpm run clean
+            //
+            //   in app/client:
+            //     pnpm run clean
+            Task::new(
+                "clean",
+                vec![
+                    Step::InSubDir {
+                        path: PathBuf::from("packages/shared"),
+                        steps: vec![Step::Command("pnpm run clean".into())],
+                    },
+                    Step::InSubDir {
+                        path: PathBuf::from("app/client"),
+                        steps: vec![Step::Command("pnpm run clean".into())],
+                    },
+                ],
+            ),
+            // test-create-db:
+            //   createdb test_db && psql -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+            Task::new(
+                "test-create-db",
+                vec![Step::Command(
+                    "createdb test_db && psql -c 'CREATE EXTENSION IF NOT EXISTS vector;'".into(),
+                )],
+            ),
+            // test-migrate:
+            //   jute test-create-db
+            //   with NODE_ENV=test:
+            //     pnpm exec migrate
+            Task::new(
+                "test-migrate",
+                vec![
+                    Step::Command("jute test-create-db".into()),
+                    Step::With {
+                        env: vec![EnvVar::new("NODE_ENV", "test")],
+                        steps: vec![Step::Command("pnpm exec migrate".into())],
+                    },
+                ],
+            ),
+        ]);
 
         assert_eq!(file, expected);
     }
 
     #[test]
     fn parses_several_env_vars_in_one_with() {
-        let step = parse_one_step(
+        let file = parse(
             "\
 build:
   with NODE_ENV=production DEBUG=0:
     pnpm run build
 ",
-        );
+        )
+        .expect("source should parse");
 
         assert_eq!(
-            step,
-            Step::With {
-                env: vec![
-                    EnvVar::new("NODE_ENV", "production"),
-                    EnvVar::new("DEBUG", "0"),
-                ],
-                steps: vec![Step::Command("pnpm run build".into())],
-            }
+            file,
+            task_file([Task::new(
+                "build",
+                vec![Step::With {
+                    env: vec![
+                        EnvVar::new("NODE_ENV", "production"),
+                        EnvVar::new("DEBUG", "0"),
+                    ],
+                    steps: vec![Step::Command("pnpm run build".into())],
+                }],
+            )])
         );
     }
 
     #[test]
     fn parses_a_with_block_nested_in_an_in_block() {
-        let step = parse_one_step(
+        let file = parse(
             "\
 migrate:
   in app/server:
     with NODE_ENV=test:
       pnpm exec migrate
 ",
-        );
+        )
+        .expect("source should parse");
 
         assert_eq!(
-            step,
-            Step::InSubDir {
-                path: PathBuf::from("app/server"),
-                steps: vec![Step::With {
-                    env: vec![EnvVar::new("NODE_ENV", "test")],
-                    steps: vec![Step::Command("pnpm exec migrate".into())],
+            file,
+            task_file([Task::new(
+                "migrate",
+                vec![Step::InSubDir {
+                    path: PathBuf::from("app/server"),
+                    steps: vec![Step::With {
+                        env: vec![EnvVar::new("NODE_ENV", "test")],
+                        steps: vec![Step::Command("pnpm exec migrate".into())],
+                    }],
                 }],
-            }
+            )])
         );
     }
 
@@ -447,19 +453,25 @@ migrate:
     /// them back — an owned string is the price of a command containing one.
     #[test]
     fn rebuilds_commands_containing_colons_and_equals() {
-        let step = parse_one_step(
+        let file = parse(
             "\
 serve:
   docker run -p 8080:80 -e FOO=bar image
 ",
-        );
+        )
+        .expect("source should parse");
 
         assert_eq!(
-            step,
-            Step::Command("docker run -p 8080:80 -e FOO=bar image".into())
+            file,
+            task_file([Task::new(
+                "serve",
+                vec![Step::Command(
+                    "docker run -p 8080:80 -e FOO=bar image".into()
+                )],
+            )])
         );
 
-        let Step::Command(line) = step else {
+        let Step::Command(line) = &file.get("serve").expect("serve should exist").steps[0] else {
             unreachable!("asserted to be a command above")
         };
 
@@ -470,12 +482,15 @@ serve:
     /// the parser as a single `Word` and avoids being rebuilt.
     #[test]
     fn borrows_commands_that_need_no_rebuilding() {
-        let step = parse_one_step(
+        let file = parse(
             "\
 build:
   ./build.sh
 ",
-        );
+        )
+        .expect("source should parse");
+
+        let step = &file.get("build").expect("build should exist").steps[0];
 
         let Step::Command(line) = step else {
             panic!("expected a command, got {step:?}")
@@ -492,49 +507,64 @@ build:
     /// the tokeniser byte for byte.
     #[test]
     fn rebuilds_commands_containing_runs_of_spaces() {
-        let step = parse_one_step(
+        let file = parse(
             "\
 fix:
   sed 's/a   b/c/' file
 ",
-        );
+        )
+        .expect("source should parse");
 
-        assert_eq!(step, Step::Command("sed 's/a   b/c/' file".into()));
+        assert_eq!(
+            file,
+            task_file([Task::new(
+                "fix",
+                vec![Step::Command("sed 's/a   b/c/' file".into())],
+            )])
+        );
     }
 
     /// `in` and `with` are keywords wherever they appear, so a command using
     /// one as an ordinary word has to be put back together.
     #[test]
     fn rebuilds_commands_containing_keywords() {
-        let step = parse_one_step(
+        let file = parse(
             "\
 list:
   for f in *.txt; do echo $f; done
 ",
-        );
+        )
+        .expect("source should parse");
 
         assert_eq!(
-            step,
-            Step::Command("for f in *.txt; do echo $f; done".into())
+            file,
+            task_file([Task::new(
+                "list",
+                vec![Step::Command("for f in *.txt; do echo $f; done".into())],
+            )])
         );
     }
 
     #[test]
     fn parses_a_directory_whose_name_contains_spaces() {
-        let step = parse_one_step(
+        let file = parse(
             "\
 build:
   in My Project/server:
     cargo build
 ",
-        );
+        )
+        .expect("source should parse");
 
         assert_eq!(
-            step,
-            Step::InSubDir {
-                path: PathBuf::from("My Project/server"),
-                steps: vec![Step::Command("cargo build".into())],
-            }
+            file,
+            task_file([Task::new(
+                "build",
+                vec![Step::InSubDir {
+                    path: PathBuf::from("My Project/server"),
+                    steps: vec![Step::Command("cargo build".into())],
+                }],
+            )])
         );
     }
 
@@ -552,14 +582,17 @@ build :
         .expect("spaces before a `:` should be ignored");
 
         assert_eq!(
-            file.tasks[0].steps,
-            vec![Step::With {
-                env: vec![EnvVar::new("A", "1")],
-                steps: vec![Step::InSubDir {
-                    path: PathBuf::from("src"),
-                    steps: vec![Step::Command("cargo build".into())],
+            file,
+            task_file([Task::new(
+                "build",
+                vec![Step::With {
+                    env: vec![EnvVar::new("A", "1")],
+                    steps: vec![Step::InSubDir {
+                        path: PathBuf::from("src"),
+                        steps: vec![Step::Command("cargo build".into())],
+                    }],
                 }],
-            }]
+            )])
         );
     }
 
@@ -599,20 +632,24 @@ greet:
     /// where it wanted a name or a value.
     #[test]
     fn keywords_can_be_used_as_env_var_names_and_values() {
-        let step = parse_one_step(
+        let file = parse(
             "\
 run:
   with in=with:
     ./run.sh
 ",
-        );
+        )
+        .expect("source should parse");
 
         assert_eq!(
-            step,
-            Step::With {
-                env: vec![EnvVar::new("in", "with")],
-                steps: vec![Step::Command("./run.sh".into())],
-            }
+            file,
+            task_file([Task::new(
+                "run",
+                vec![Step::With {
+                    env: vec![EnvVar::new("in", "with")],
+                    steps: vec![Step::Command("./run.sh".into())],
+                }],
+            )])
         );
     }
 

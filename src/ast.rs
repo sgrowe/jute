@@ -1,8 +1,29 @@
-use std::{borrow::Cow, path::PathBuf};
+use std::{borrow::Cow, collections::BTreeMap, path::PathBuf};
+
+use anyhow::anyhow;
 
 #[derive(Debug, PartialEq, Default)]
 pub struct TaskFile<'a> {
-    pub tasks: Vec<Task<'a>>,
+    tasks: BTreeMap<&'a str, Task<'a>>,
+}
+
+impl<'a> TaskFile<'a> {
+    pub fn insert_task(&mut self, t: Task<'a>) -> anyhow::Result<()> {
+        match self.tasks.insert(t.name, t) {
+            Some(prev) => Err(anyhow!("Duplicate task definitions for {}", prev.name)),
+            None => Ok(()),
+        }
+    }
+
+    pub fn get(&self, name: &str) -> anyhow::Result<&Task<'_>> {
+        self.tasks
+            .get(name)
+            .ok_or_else(|| anyhow!("Task \"{}\" does not exist", name))
+    }
+
+    pub fn list_tasks(&self) -> impl Iterator<Item = &str> {
+        self.tasks.keys().copied()
+    }
 }
 
 #[derive(Debug, PartialEq)]

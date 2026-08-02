@@ -40,7 +40,7 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn run_task(task: &Task) -> anyhow::Result<()> {
+fn run_task(_task: &Task) -> anyhow::Result<()> {
     unimplemented!()
 }
 

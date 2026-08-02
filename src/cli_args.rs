@@ -2,8 +2,8 @@ use std::borrow::Cow;
 
 #[derive(Debug, PartialEq)]
 pub enum CliArgs {
-    RunCommand {
-        command: Cow<'static, str>,
+    RunTask {
+        task_name: Cow<'static, str>,
         args: Vec<String>,
     },
     ShowHelp,
@@ -16,12 +16,12 @@ pub fn parse_cli_args<Args: IntoIterator<Item = String>>(cli_args: Args) -> CliA
 
     match args.next() {
         Some(s) if s == "--help" => CliArgs::ShowHelp,
-        Some(command) => CliArgs::RunCommand {
-            command: command.into(),
+        Some(command) => CliArgs::RunTask {
+            task_name: command.into(),
             args: args.collect(),
         },
-        None => CliArgs::RunCommand {
-            command: Cow::Borrowed("default"),
+        None => CliArgs::RunTask {
+            task_name: Cow::Borrowed("default"),
             args: Vec::new(),
         },
     }
@@ -39,8 +39,8 @@ mod tests {
     fn no_args_runs_default_command() {
         assert_eq!(
             parse_cli_args(args(&["jute"])),
-            CliArgs::RunCommand {
-                command: Cow::Borrowed("default"),
+            CliArgs::RunTask {
+                task_name: Cow::Borrowed("default"),
                 args: Vec::new(),
             }
         );
@@ -50,8 +50,8 @@ mod tests {
     fn empty_iterator_runs_default_command() {
         assert_eq!(
             parse_cli_args(Vec::<String>::new()),
-            CliArgs::RunCommand {
-                command: Cow::Borrowed("default"),
+            CliArgs::RunTask {
+                task_name: Cow::Borrowed("default"),
                 args: Vec::new(),
             }
         );
@@ -61,8 +61,8 @@ mod tests {
     fn command_with_no_args() {
         assert_eq!(
             parse_cli_args(args(&["jute", "build"])),
-            CliArgs::RunCommand {
-                command: Cow::Borrowed("build"),
+            CliArgs::RunTask {
+                task_name: Cow::Borrowed("build"),
                 args: Vec::new(),
             }
         );
@@ -72,8 +72,8 @@ mod tests {
     fn command_with_args() {
         assert_eq!(
             parse_cli_args(args(&["jute", "build", "--release", "-v"])),
-            CliArgs::RunCommand {
-                command: Cow::Borrowed("build"),
+            CliArgs::RunTask {
+                task_name: Cow::Borrowed("build"),
                 args: vec!["--release".to_string(), "-v".to_string()],
             }
         );
