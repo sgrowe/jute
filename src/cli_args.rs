@@ -7,6 +7,7 @@ pub enum CliArgs {
         args: Vec<String>,
     },
     ShowHelp,
+    ListCommands,
 }
 
 pub fn parse_cli_args<Args: IntoIterator<Item = String>>(cli_args: Args) -> CliArgs {
@@ -14,15 +15,19 @@ pub fn parse_cli_args<Args: IntoIterator<Item = String>>(cli_args: Args) -> CliA
 
     let _program_name = args.next();
 
-    match args.next() {
-        Some(s) if s == "--help" => CliArgs::ShowHelp,
-        Some(command) => CliArgs::RunTask {
-            task_name: command.into(),
-            args: args.collect(),
-        },
-        None => CliArgs::RunTask {
+    let Some(command) = args.next() else {
+        return CliArgs::RunTask {
             task_name: Cow::Borrowed("default"),
             args: Vec::new(),
+        };
+    };
+
+    match command.as_str() {
+        "--help" => CliArgs::ShowHelp,
+        "--list" => CliArgs::ListCommands,
+        _ => CliArgs::RunTask {
+            task_name: command.into(),
+            args: args.collect(),
         },
     }
 }
@@ -82,5 +87,13 @@ mod tests {
     #[test]
     fn help_flag_shows_help() {
         assert_eq!(parse_cli_args(args(&["jute", "--help"])), CliArgs::ShowHelp);
+    }
+
+    #[test]
+    fn list_flag_lists_tasks() {
+        assert_eq!(
+            parse_cli_args(args(&["jute", "--list"])),
+            CliArgs::ListCommands
+        );
     }
 }

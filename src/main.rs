@@ -4,8 +4,6 @@ use crate::parser::parse_tasks_file;
 use crate::project_root::ProjectRoot;
 use std::env;
 
-// `main` doesn't read or parse the task file yet, so these three modules are
-// only reachable from their own tests. Drop the attributes once it does.
 mod ast;
 mod cli_args;
 mod parser;
@@ -22,12 +20,7 @@ fn main() -> anyhow::Result<()> {
             task_name,
             args: _args,
         } => {
-            let cwd = env::current_dir()?;
-            let project_root = ProjectRoot::find_project_root_starting_from(&cwd)?;
-
-            dbg!(&project_root);
-
-            let tasks_file_raw = project_root.read_tasks_file()?;
+            let tasks_file_raw = find_and_read_tasks_file()?;
 
             let tasks = parse_tasks_file(&tasks_file_raw)?;
 
@@ -36,11 +29,35 @@ fn main() -> anyhow::Result<()> {
             run_task(task)
         }
         CliArgs::ShowHelp => print_help_text(),
+        CliArgs::ListCommands => list_tasks(),
     }
 }
 
 fn run_task(_task: &Task) -> anyhow::Result<()> {
     unimplemented!()
+}
+
+fn find_and_read_tasks_file() -> anyhow::Result<String> {
+    let cwd = env::current_dir()?;
+    let project_root = ProjectRoot::find_project_root_starting_from(&cwd)?;
+
+    dbg!(&project_root);
+
+    project_root.read_tasks_file()
+}
+
+fn list_tasks() -> anyhow::Result<()> {
+    let tasks_file_raw = find_and_read_tasks_file()?;
+
+    let tasks = parse_tasks_file(&tasks_file_raw)?;
+
+    println!("Available tasks:");
+
+    for task_name in tasks.list_tasks() {
+        println!("- {task_name}");
+    }
+
+    Ok(())
 }
 
 fn print_help_text() -> anyhow::Result<()> {
