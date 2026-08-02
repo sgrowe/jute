@@ -1,8 +1,7 @@
 use crate::ast::Task;
 use crate::cli_args::{CliArgs, parse_cli_args};
-use crate::parser::Parser;
+use crate::parser::parse_tasks_file;
 use crate::project_root::ProjectRoot;
-use crate::tokeniser::Tokeniser;
 use std::env;
 
 // `main` doesn't read or parse the task file yet, so these three modules are
@@ -30,7 +29,7 @@ fn main() -> anyhow::Result<()> {
 
             let tasks_file_raw = project_root.read_tasks_file()?;
 
-            let tasks = Parser::new(Tokeniser::new(&tasks_file_raw)).parse()?;
+            let tasks = parse_tasks_file(&tasks_file_raw)?;
 
             let task = tasks.get(&task_name)?;
 

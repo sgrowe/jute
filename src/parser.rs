@@ -5,6 +5,10 @@ use crate::{
     tokeniser::{Token, Tokeniser},
 };
 
+pub fn parse_tasks_file(raw: &str) -> Result<TaskFile<'_>, ParseError> {
+    Parser::new(Tokeniser::new(raw)).parse()
+}
+
 #[derive(Debug)]
 pub struct ParseError {
     message: Cow<'static, str>,
@@ -304,11 +308,6 @@ mod tests {
         fs::read_to_string(path).unwrap()
     }
 
-    /// Parses a source string, for cases too small to be worth an example file.
-    fn parse(source: &str) -> Result<TaskFile<'_>, ParseError> {
-        Parser::new(Tokeniser::new(source)).parse()
-    }
-
     /// The `TaskFile` a test expects to see, built through the same public API
     /// the parser itself uses.
     fn task_file<'a>(tasks: impl IntoIterator<Item = Task<'a>>) -> TaskFile<'a> {
@@ -325,9 +324,7 @@ mod tests {
     fn parses_example_001() {
         let source = read_example_file("001.jute");
 
-        let file = Parser::new(Tokeniser::new(&source))
-            .parse()
-            .expect("001.jute should parse");
+        let file = parse_tasks_file(&source).expect("001.jute should parse");
 
         let expected = task_file([
             // simple:
@@ -398,7 +395,7 @@ mod tests {
 
     #[test]
     fn parses_several_env_vars_in_one_with() {
-        let file = parse(
+        let file = parse_tasks_file(
             "\
 build:
   with NODE_ENV=production DEBUG=0:
@@ -424,7 +421,7 @@ build:
 
     #[test]
     fn parses_a_with_block_nested_in_an_in_block() {
-        let file = parse(
+        let file = parse_tasks_file(
             "\
 migrate:
   in app/server:
@@ -453,7 +450,7 @@ migrate:
     /// them back — an owned string is the price of a command containing one.
     #[test]
     fn rebuilds_commands_containing_colons_and_equals() {
-        let file = parse(
+        let file = parse_tasks_file(
             "\
 serve:
   docker run -p 8080:80 -e FOO=bar image
@@ -482,7 +479,7 @@ serve:
     /// the parser as a single `Word` and avoids being rebuilt.
     #[test]
     fn borrows_commands_that_need_no_rebuilding() {
-        let file = parse(
+        let file = parse_tasks_file(
             "\
 build:
   ./build.sh
@@ -507,7 +504,7 @@ build:
     /// the tokeniser byte for byte.
     #[test]
     fn rebuilds_commands_containing_runs_of_spaces() {
-        let file = parse(
+        let file = parse_tasks_file(
             "\
 fix:
   sed 's/a   b/c/' file
@@ -528,7 +525,7 @@ fix:
     /// one as an ordinary word has to be put back together.
     #[test]
     fn rebuilds_commands_containing_keywords() {
-        let file = parse(
+        let file = parse_tasks_file(
             "\
 list:
   for f in *.txt; do echo $f; done
@@ -547,7 +544,7 @@ list:
 
     #[test]
     fn parses_a_directory_whose_name_contains_spaces() {
-        let file = parse(
+        let file = parse_tasks_file(
             "\
 build:
   in My Project/server:
@@ -571,7 +568,7 @@ build:
     /// Spaces around the structural parts of a line carry no meaning.
     #[test]
     fn ignores_spaces_around_colons() {
-        let file = parse(
+        let file = parse_tasks_file(
             "\
 build :
   with A=1 :
@@ -598,7 +595,7 @@ build :
 
     #[test]
     fn a_task_name_containing_a_space_is_an_error() {
-        let error = parse(
+        let error = parse_tasks_file(
             "\
 my task:
   echo hello
@@ -616,7 +613,7 @@ my task:
     /// for a value to hold one.
     #[test]
     fn an_env_var_value_containing_a_space_is_an_error() {
-        let error = parse(
+        let error = parse_tasks_file(
             "\
 greet:
   with MSG=hello world:
@@ -632,7 +629,7 @@ greet:
     /// where it wanted a name or a value.
     #[test]
     fn keywords_can_be_used_as_env_var_names_and_values() {
-        let file = parse(
+        let file = parse_tasks_file(
             "\
 run:
   with in=with:
@@ -655,7 +652,7 @@ run:
 
     #[test]
     fn a_task_without_steps_is_an_error() {
-        let error = parse(
+        let error = parse_tasks_file(
             "\
 empty:
 other:
@@ -672,7 +669,7 @@ other:
 
     #[test]
     fn an_in_block_without_steps_is_an_error() {
-        let error = parse(
+        let error = parse_tasks_file(
             "\
 clean:
   in packages/shared:
