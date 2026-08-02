@@ -12,8 +12,6 @@ mod tokeniser;
 fn main() -> anyhow::Result<()> {
     let args = parse_cli_args(env::args());
 
-    dbg!(&args);
-
     match args {
         CliArgs::RunTask { task_name, args } => run_task(&task_name, &args),
         CliArgs::ShowHelp => show_help(),

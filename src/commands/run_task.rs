@@ -1,3 +1,5 @@
+use anyhow::anyhow;
+
 use crate::ast::{Step, Task};
 use crate::parser::parse_tasks_file;
 use crate::project_root::find_and_read_tasks_file;
@@ -18,10 +20,14 @@ pub fn run_task(task_name: &str, _args: &[String]) -> anyhow::Result<()> {
 fn run_steps(steps: &[Step]) -> anyhow::Result<()> {
     for step in steps {
         if let Step::Command(s) = step {
-            let result = Command::new("bash").arg("-c").arg(s.as_ref()).output()?;
+            let status = Command::new("bash").arg("-c").arg(s.as_ref()).status()?;
 
-            print!("{}", str::from_utf8(&result.stdout).unwrap());
-            eprint!("{}", str::from_utf8(&result.stderr).unwrap());
+            if !status.success() {
+                return Err(match status.code() {
+                    Some(code) => anyhow!("Command \"{}\" failed with status code {}", s, code),
+                    None => anyhow!("Command \"{}\" was terminated by a signal", s),
+                });
+            }
         }
     }
 
