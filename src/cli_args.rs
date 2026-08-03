@@ -8,6 +8,7 @@ pub enum CliArgs {
     },
     ShowHelp,
     ListCommands,
+    Install,
 }
 
 pub fn parse_cli_args<Args: IntoIterator<Item = String>>(cli_args: Args) -> CliArgs {
@@ -25,6 +26,7 @@ pub fn parse_cli_args<Args: IntoIterator<Item = String>>(cli_args: Args) -> CliA
     match command.as_str() {
         "--help" => CliArgs::ShowHelp,
         "--list" => CliArgs::ListCommands,
+        "--install" => CliArgs::Install,
         _ => CliArgs::RunTask {
             task_name: command.into(),
             args: args.collect(),
@@ -94,6 +96,14 @@ mod tests {
         assert_eq!(
             parse_cli_args(args(&["jute", "--list"])),
             CliArgs::ListCommands
+        );
+    }
+
+    #[test]
+    fn install_flag_runs_install() {
+        assert_eq!(
+            parse_cli_args(args(&["jute", "--install"])),
+            CliArgs::Install
         );
     }
 }

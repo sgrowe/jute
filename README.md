@@ -36,6 +36,8 @@ Run `jute --install` in the root of your repo to install it. jute will create th
                    immediately run `.jute/run <command>` without any installation needed
 
   bin/          <- binaries for each platform, `.jute/run` automatically executes the correct one
-    jute-mac-os
-    jute-linux
+    jute-macos-aarch64
+    jute-macos-x86_64
+    jute-linux-x86_64
+    jute-linux-aarch64
 ```

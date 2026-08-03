@@ -1,6 +1,6 @@
 use crate::cli_args::{CliArgs, parse_cli_args};
 use crate::command_runner::BashCommandRunner;
-use crate::commands::{list_tasks, run_task, show_help};
+use crate::commands::{install, list_tasks, run_task, show_help};
 use std::env;
 
 mod ast;
@@ -23,5 +23,10 @@ fn main() -> anyhow::Result<()> {
         }
         CliArgs::ShowHelp => show_help(),
         CliArgs::ListCommands => list_tasks(),
+        CliArgs::Install => {
+            let cwd = env::current_dir()?;
+
+            install(&cwd)
+        }
     }
 }
