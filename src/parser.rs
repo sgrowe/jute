@@ -152,23 +152,39 @@ impl<'a> Parser<'a> {
     /// split on put back. A command that holds no `:` or `=` is a single
     /// `Word`, so the common case borrows straight from the source.
     fn command(&mut self, first_word: &'a str) -> Result<Step<'a>, ParseError> {
-        let mut line = Cow::Borrowed(first_word);
+        let program = Cow::Borrowed(first_word);
+
+        let mut args = Vec::new();
+        let mut cur_arg: Option<Cow<'a, str>> = None;
 
         loop {
             let token = self.tokens.next();
 
             match token {
-                Some(Token::NewLine) | None => return Ok(Step::Command(line)),
-                Some(Token::With) => line.to_mut().push_str("with"),
-                Some(Token::In) => line.to_mut().push_str("in"),
-                Some(Token::Word(w)) => line.to_mut().push_str(w),
-                Some(Token::Spaces(n)) => line.to_mut().extend(std::iter::repeat_n(' ', n)),
-                Some(Token::Colon) => line.to_mut().push(':'),
-                Some(Token::Equals) => line.to_mut().push('='),
+                Some(Token::NewLine) | None => {
+                    args.extend(cur_arg);
+                    return Ok(Step::Command(program, args));
+                }
+                Some(Token::Spaces(_)) => args.extend(cur_arg.take()),
+                Some(Token::With) => Self::extend_arg(&mut cur_arg, "with"),
+                Some(Token::In) => Self::extend_arg(&mut cur_arg, "in"),
+                Some(Token::Word(w)) => Self::extend_arg(&mut cur_arg, w),
+                Some(Token::Colon) => Self::extend_arg(&mut cur_arg, ":"),
+                Some(Token::Equals) => Self::extend_arg(&mut cur_arg, "="),
                 Some(Token::Indent) | Some(Token::Dedent) => {
                     return Err(ParseError::indentation());
                 }
             }
+        }
+    }
+
+    /// Appends `text` to the argument being built, starting a new (borrowed)
+    /// one if none is in progress yet. Only allocates when a token boundary
+    /// (`:`, `=`, a keyword) falls inside a single argument.
+    fn extend_arg(arg: &mut Option<Cow<'a, str>>, text: &'a str) {
+        match arg {
+            Some(a) => a.to_mut().push_str(text),
+            None => *arg = Some(Cow::Borrowed(text)),
         }
     }
 
@@ -334,7 +350,7 @@ mod tests {
                 "simple",
                 vec![Step::InSubDir {
                     path: PathBuf::from("app/server"),
-                    steps: vec![Step::Command("cargo install".into())],
+                    steps: vec![Step::Command("cargo".into(), vec!["install".into()])],
                 }],
             ),
             // with-dir:
@@ -344,7 +360,10 @@ mod tests {
                 "with-dir",
                 vec![Step::InSubDir {
                     path: PathBuf::from("app/server"),
-                    steps: vec![Step::Command("pnpm run build".into())],
+                    steps: vec![Step::Command(
+                        "pnpm".into(),
+                        vec!["run".into(), "build".into()],
+                    )],
                 }],
             ),
             // clean:
@@ -358,11 +377,17 @@ mod tests {
                 vec![
                     Step::InSubDir {
                         path: PathBuf::from("packages/shared"),
-                        steps: vec![Step::Command("pnpm run clean".into())],
+                        steps: vec![Step::Command(
+                            "pnpm".into(),
+                            vec!["run".into(), "clean".into()],
+                        )],
                     },
                     Step::InSubDir {
                         path: PathBuf::from("app/client"),
-                        steps: vec![Step::Command("pnpm run clean".into())],
+                        steps: vec![Step::Command(
+                            "pnpm".into(),
+                            vec!["run".into(), "clean".into()],
+                        )],
                     },
                 ],
             ),
@@ -371,7 +396,19 @@ mod tests {
             Task::new(
                 "test-create-db",
                 vec![Step::Command(
-                    "createdb test_db && psql -c 'CREATE EXTENSION IF NOT EXISTS vector;'".into(),
+                    "createdb".into(),
+                    vec![
+                        "test_db".into(),
+                        "&&".into(),
+                        "psql".into(),
+                        "-c".into(),
+                        "'CREATE".into(),
+                        "EXTENSION".into(),
+                        "IF".into(),
+                        "NOT".into(),
+                        "EXISTS".into(),
+                        "vector;'".into(),
+                    ],
                 )],
             ),
             // test-migrate:
@@ -381,10 +418,13 @@ mod tests {
             Task::new(
                 "test-migrate",
                 vec![
-                    Step::Command("jute test-create-db".into()),
+                    Step::Command("jute".into(), vec!["test-create-db".into()]),
                     Step::With {
                         env: vec![EnvVar::new("NODE_ENV", "test")],
-                        steps: vec![Step::Command("pnpm exec migrate".into())],
+                        steps: vec![Step::Command(
+                            "pnpm".into(),
+                            vec!["exec".into(), "migrate".into()],
+                        )],
                     },
                 ],
             ),
@@ -413,7 +453,10 @@ build:
                         EnvVar::new("NODE_ENV", "production"),
                         EnvVar::new("DEBUG", "0"),
                     ],
-                    steps: vec![Step::Command("pnpm run build".into())],
+                    steps: vec![Step::Command(
+                        "pnpm".into(),
+                        vec!["run".into(), "build".into()]
+                    )],
                 }],
             )])
         );
@@ -439,7 +482,10 @@ migrate:
                     path: PathBuf::from("app/server"),
                     steps: vec![Step::With {
                         env: vec![EnvVar::new("NODE_ENV", "test")],
-                        steps: vec![Step::Command("pnpm exec migrate".into())],
+                        steps: vec![Step::Command(
+                            "pnpm".into(),
+                            vec!["exec".into(), "migrate".into()]
+                        )],
                     }],
                 }],
             )])
@@ -463,16 +509,25 @@ serve:
             task_file([Task::new(
                 "serve",
                 vec![Step::Command(
-                    "docker run -p 8080:80 -e FOO=bar image".into()
+                    "docker".into(),
+                    vec![
+                        "run".into(),
+                        "-p".into(),
+                        "8080:80".into(),
+                        "-e".into(),
+                        "FOO=bar".into(),
+                        "image".into(),
+                    ],
                 )],
             )])
         );
 
-        let Step::Command(line) = &file.get("serve").expect("serve should exist").steps[0] else {
+        let Step::Command(_, args) = &file.get("serve").expect("serve should exist").steps[0]
+        else {
             unreachable!("asserted to be a command above")
         };
 
-        assert!(matches!(line, Cow::Owned(_)));
+        assert!(matches!(args[2], Cow::Owned(_)));
     }
 
     /// Words are split on spaces, so only a genuinely one-word command reaches
@@ -489,21 +544,22 @@ build:
 
         let step = &file.get("build").expect("build should exist").steps[0];
 
-        let Step::Command(line) = step else {
+        let Step::Command(program, args) = step else {
             panic!("expected a command, got {step:?}")
         };
 
-        assert_eq!(line, "./build.sh");
+        assert_eq!(program, "./build.sh");
+        assert_eq!(args, &Vec::<Cow<str>>::new());
         assert!(
-            matches!(line, Cow::Borrowed(_)),
+            matches!(program, Cow::Borrowed(_)),
             "a command that is a single word should borrow from the source"
         );
     }
 
-    /// `Spaces` carries its width, so a command survives a round trip through
-    /// the tokeniser byte for byte.
+    /// A run of spaces is still just one separator between arguments, so it
+    /// doesn't produce empty/phantom args.
     #[test]
-    fn rebuilds_commands_containing_runs_of_spaces() {
+    fn a_run_of_spaces_is_a_single_argument_separator() {
         let file = parse_tasks_file(
             "\
 fix:
@@ -516,7 +572,10 @@ fix:
             file,
             task_file([Task::new(
                 "fix",
-                vec![Step::Command("sed 's/a   b/c/' file".into())],
+                vec![Step::Command(
+                    "sed".into(),
+                    vec!["'s/a".into(), "b/c/'".into(), "file".into()],
+                )],
             )])
         );
     }
@@ -537,7 +596,18 @@ list:
             file,
             task_file([Task::new(
                 "list",
-                vec![Step::Command("for f in *.txt; do echo $f; done".into())],
+                vec![Step::Command(
+                    "for".into(),
+                    vec![
+                        "f".into(),
+                        "in".into(),
+                        "*.txt;".into(),
+                        "do".into(),
+                        "echo".into(),
+                        "$f;".into(),
+                        "done".into(),
+                    ],
+                )],
             )])
         );
     }
@@ -559,7 +629,7 @@ build:
                 "build",
                 vec![Step::InSubDir {
                     path: PathBuf::from("My Project/server"),
-                    steps: vec![Step::Command("cargo build".into())],
+                    steps: vec![Step::Command("cargo".into(), vec!["build".into()])],
                 }],
             )])
         );
@@ -586,7 +656,7 @@ build :
                     env: vec![EnvVar::new("A", "1")],
                     steps: vec![Step::InSubDir {
                         path: PathBuf::from("src"),
-                        steps: vec![Step::Command("cargo build".into())],
+                        steps: vec![Step::Command("cargo".into(), vec!["build".into()])],
                     }],
                 }],
             )])
@@ -644,7 +714,7 @@ run:
                 "run",
                 vec![Step::With {
                     env: vec![EnvVar::new("in", "with")],
-                    steps: vec![Step::Command("./run.sh".into())],
+                    steps: vec![Step::Command("./run.sh".into(), vec![])],
                 }],
             )])
         );

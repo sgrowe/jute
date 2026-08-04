@@ -30,15 +30,23 @@ pub fn run_task<R: CommandRunner>(
 fn run_steps<R: CommandRunner>(steps: &[Step], root: &Path, runner: &mut R) -> anyhow::Result<()> {
     for step in steps {
         match step {
-            Step::Command(s) => {
-                let mut cmd = Command::new("bash");
-                cmd.args(["-c", s]);
+            Step::Command(program, args) => {
+                let mut cmd = Command::new(program.as_ref());
+                cmd.args(args.iter().map(AsRef::as_ref));
+
                 let status = runner.exec(cmd)?;
 
                 if !status.success() {
+                    let command = std::iter::once(program.as_ref())
+                        .chain(args.iter().map(AsRef::as_ref))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+
                     return Err(match status.code() {
-                        Some(code) => anyhow!("Command \"{}\" failed with status code {}", s, code),
-                        None => anyhow!("Command \"{}\" was terminated by a signal", s),
+                        Some(code) => {
+                            anyhow!("Command \"{command}\" failed with status code {code}")
+                        }
+                        None => anyhow!("Command \"{command}\" was terminated by a signal"),
                     });
                 }
             }
@@ -88,10 +96,7 @@ mod tests {
 
         result.unwrap();
 
-        assert_eq!(runner.commands[0].command, vec!["bash", "-c", "echo hello"]);
-        assert_eq!(
-            runner.commands[1].command,
-            vec!["bash", "-c", "echo goodbye"],
-        );
+        assert_eq!(runner.commands[0].command, vec!["echo", "hello"]);
+        assert_eq!(runner.commands[1].command, vec!["echo", "goodbye"],);
     }
 }

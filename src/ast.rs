@@ -40,7 +40,7 @@ impl<'a> Task<'a> {
 
 #[derive(Debug, PartialEq)]
 pub enum Step<'a> {
-    Command(Cow<'a, str>),
+    Command(Cow<'a, str>, Vec<Cow<'a, str>>),
     With {
         env: Vec<EnvVar<'a>>,
         steps: Vec<Step<'a>>,
