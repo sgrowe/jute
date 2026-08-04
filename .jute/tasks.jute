@@ -3,5 +3,5 @@
 
 validate:
     cargo fmt
-    cargo clippy --fix --all-targets --allow-dirty
-    cargo test
+    cargo clippy  --quiet --fix --all-targets --allow-dirty
+    cargo test --quiet
