@@ -14,10 +14,13 @@ mod tokeniser;
 fn main() -> anyhow::Result<()> {
     let args = parse_cli_args(env::args());
 
-    let mut cmd_runner = BashCommandRunner {};
-
     match args {
-        CliArgs::RunTask { task_name, args } => run_task(&task_name, &args, &mut cmd_runner),
+        CliArgs::RunTask { task_name, args } => {
+            let mut cmd_runner = BashCommandRunner {};
+            let cwd = env::current_dir()?;
+
+            run_task(&task_name, &args, &cwd, &mut cmd_runner)
+        }
         CliArgs::ShowHelp => show_help(),
         CliArgs::ListCommands => list_tasks(),
     }

@@ -4,17 +4,16 @@ use crate::ast::{Step, Task};
 use crate::command_runner::CommandRunner;
 use crate::parser::parse_tasks_file;
 use crate::project_root::ProjectRoot;
-use std::env;
 use std::path::Path;
 use std::process::Command;
 
 pub fn run_task<R: CommandRunner>(
     task_name: &str,
     _args: &[String],
+    cwd: &Path,
     runner: &mut R,
 ) -> anyhow::Result<()> {
-    let cwd = env::current_dir()?;
-    let project_root = ProjectRoot::find_project_root_starting_from(&cwd)?;
+    let project_root = ProjectRoot::find_project_root_starting_from(cwd)?;
 
     let tasks_file_raw = project_root.read_tasks_file()?;
 
@@ -63,6 +62,7 @@ mod tests {
     use crate::command_runner::test_utils::RecordingRunner;
 
     use super::*;
+    use std::env;
     use std::fs;
     use std::path::PathBuf;
 
@@ -84,15 +84,8 @@ mod tests {
             "greet:\n  echo hello\n  echo goodbye\n\nfarewell:\n  echo unused\n",
         );
 
-        // `run_task` finds the project from the process' working directory, so
-        // the test has to move there and put it back afterwards.
-        let previous_cwd = env::current_dir().unwrap();
-        env::set_current_dir(&root).unwrap();
-
         let mut runner = RecordingRunner::default();
-        let result = run_task("greet", &[], &mut runner);
-
-        env::set_current_dir(previous_cwd).unwrap();
+        let result = run_task("greet", &[], &root, &mut runner);
 
         result.unwrap();
 
