@@ -1,6 +1,9 @@
 use std::{borrow::Cow, collections::BTreeMap, path::PathBuf};
 
-use anyhow::anyhow;
+use crate::{
+    error::{JuteError, JuteResult},
+    parser::ParseError,
+};
 
 #[derive(Debug, PartialEq, Default)]
 pub struct TaskFile<'a> {
@@ -8,17 +11,22 @@ pub struct TaskFile<'a> {
 }
 
 impl<'a> TaskFile<'a> {
-    pub fn insert_task(&mut self, t: Task<'a>) -> anyhow::Result<()> {
+    /// A duplicate definition is a fault in the tasks file, so this reports a
+    /// [`ParseError`] for the parser to propagate as-is.
+    pub fn insert_task(&mut self, t: Task<'a>) -> Result<(), ParseError> {
         match self.tasks.insert(t.name, t) {
-            Some(prev) => Err(anyhow!("Duplicate task definitions for {}", prev.name)),
+            Some(prev) => Err(ParseError::new(format!(
+                "Duplicate task definitions for {}",
+                prev.name
+            ))),
             None => Ok(()),
         }
     }
 
-    pub fn get(&self, name: &str) -> anyhow::Result<&Task<'_>> {
-        self.tasks
-            .get(name)
-            .ok_or_else(|| anyhow!("Task \"{}\" does not exist", name))
+    pub fn get(&self, name: &str) -> JuteResult<&Task<'_>> {
+        self.tasks.get(name).ok_or_else(|| JuteError::TaskNotFound {
+            name: name.to_string(),
+        })
     }
 
     pub fn list_tasks(&self) -> impl Iterator<Item = &str> {

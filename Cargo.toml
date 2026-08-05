@@ -12,4 +12,3 @@ panic = "abort"
 strip = true
 
 [dependencies]
-anyhow = "*"

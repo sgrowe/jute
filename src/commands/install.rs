@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow};
+use crate::error::{Context, JuteResult};
 use std::{
     env::{
         consts::{ARCH, OS},
@@ -15,7 +15,7 @@ const DEFAULT_TASKS_FILE: &str = include_str!("../../examples/default.jute");
 
 const EXECUTABLE_MODE: u32 = 0o755;
 
-pub fn install(cwd: &Path) -> anyhow::Result<()> {
+pub fn install(cwd: &Path) -> JuteResult<()> {
     let jute_dir = cwd.join(".jute");
     fs::create_dir_all(&jute_dir)
         .with_context(|| format!("failed to create {}", jute_dir.display()))?;
@@ -34,7 +34,7 @@ pub fn install(cwd: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn write_run_script(jute_dir: &Path) -> anyhow::Result<()> {
+fn write_run_script(jute_dir: &Path) -> JuteResult<()> {
     let run_path = jute_dir.join("run");
 
     fs::write(&run_path, RUN_SCRIPT_TEMPLATE)
@@ -43,7 +43,7 @@ fn write_run_script(jute_dir: &Path) -> anyhow::Result<()> {
     set_executable(&run_path)
 }
 
-fn write_default_tasks_file_if_absent(jute_dir: &Path) -> anyhow::Result<()> {
+fn write_default_tasks_file_if_absent(jute_dir: &Path) -> JuteResult<()> {
     let tasks_path = jute_dir.join("tasks.jute");
 
     match OpenOptions::new()
@@ -59,12 +59,11 @@ fn write_default_tasks_file_if_absent(jute_dir: &Path) -> anyhow::Result<()> {
     }
 }
 
-fn install_current_binary(bin_dir: &Path) -> anyhow::Result<()> {
+fn install_current_binary(bin_dir: &Path) -> JuteResult<()> {
     let src =
         current_exe().context("failed to determine path of the currently running executable")?;
-    let dest = bin_dir.join(binary_file_name());
 
-    copy_executable_atomically(&src, &dest)
+    copy_executable_atomically(&src, bin_dir, &binary_file_name())
 }
 
 /// `jute-<os>-<arch>`, e.g. `jute-macos-aarch64`, `jute-linux-x86_64`.
@@ -77,14 +76,8 @@ fn binary_file_name() -> String {
 /// corrupt it. Copying into a same-directory temp file and renaming into
 /// place avoids that; `rename` is atomic and safe even if `dest` is
 /// currently executing.
-fn copy_executable_atomically(src: &Path, dest: &Path) -> anyhow::Result<()> {
-    let bin_dir = dest
-        .parent()
-        .ok_or_else(|| anyhow!("{} has no parent directory", dest.display()))?;
-    let file_name = dest
-        .file_name()
-        .ok_or_else(|| anyhow!("{} has no file name", dest.display()))?
-        .to_string_lossy();
+fn copy_executable_atomically(src: &Path, bin_dir: &Path, file_name: &str) -> JuteResult<()> {
+    let dest = bin_dir.join(file_name);
     let tmp_path = bin_dir.join(format!(".{file_name}.tmp.{}", std::process::id()));
 
     // A closure rather than a block, so that `?` returns to here and the
@@ -94,7 +87,7 @@ fn copy_executable_atomically(src: &Path, dest: &Path) -> anyhow::Result<()> {
             format!("failed to copy {} to {}", src.display(), tmp_path.display())
         })?;
         set_executable(&tmp_path)?;
-        fs::rename(&tmp_path, dest).with_context(|| {
+        fs::rename(&tmp_path, &dest).with_context(|| {
             format!(
                 "failed to move {} into place at {}",
                 tmp_path.display(),
@@ -110,7 +103,7 @@ fn copy_executable_atomically(src: &Path, dest: &Path) -> anyhow::Result<()> {
     result
 }
 
-fn set_executable(path: &Path) -> anyhow::Result<()> {
+fn set_executable(path: &Path) -> JuteResult<()> {
     let mut perms = fs::metadata(path)
         .with_context(|| format!("failed to read metadata for {}", path.display()))?
         .permissions();

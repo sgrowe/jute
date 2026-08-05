@@ -1,9 +1,9 @@
-use anyhow::anyhow;
-
 use crate::ast::{Step, Task};
 use crate::command_runner::CommandRunner;
+use crate::error::{Context, JuteError, JuteResult};
 use crate::parser::parse_tasks_file;
 use crate::project_root::ProjectRoot;
+use std::borrow::Cow;
 use std::path::Path;
 use std::process::Command;
 
@@ -12,7 +12,7 @@ pub fn run_task<R: CommandRunner>(
     _args: &[String],
     cwd: &Path,
     runner: &mut R,
-) -> anyhow::Result<()> {
+) -> JuteResult<()> {
     let project_root = ProjectRoot::find_project_root_starting_from(cwd)?;
 
     let tasks_file_raw = project_root.read_tasks_file()?;
@@ -26,26 +26,23 @@ pub fn run_task<R: CommandRunner>(
     run_steps(steps, project_root.path(), runner)
 }
 
-fn run_steps<R: CommandRunner>(steps: &[Step], root: &Path, runner: &mut R) -> anyhow::Result<()> {
+fn run_steps<R: CommandRunner>(steps: &[Step], root: &Path, runner: &mut R) -> JuteResult<()> {
     for step in steps {
         match step {
             Step::Command(program, args) => {
                 let mut cmd = Command::new(program.as_ref());
                 cmd.args(args.iter().map(AsRef::as_ref));
 
-                let status = runner.exec(cmd)?;
+                let status = runner.exec(cmd).with_context(|| {
+                    format!("failed to run \"{}\"", command_line(program, args))
+                })?;
 
                 if !status.success() {
-                    let command = std::iter::once(program.as_ref())
-                        .chain(args.iter().map(AsRef::as_ref))
-                        .collect::<Vec<_>>()
-                        .join(" ");
+                    let command = command_line(program, args);
 
                     return Err(match status.code() {
-                        Some(code) => {
-                            anyhow!("Command \"{command}\" failed with status code {code}")
-                        }
-                        None => anyhow!("Command \"{command}\" was terminated by a signal"),
+                        Some(code) => JuteError::CommandFailed { command, code },
+                        None => JuteError::CommandKilledBySignal { command },
                     });
                 }
             }
@@ -55,6 +52,15 @@ fn run_steps<R: CommandRunner>(steps: &[Step], root: &Path, runner: &mut R) -> a
     }
 
     Ok(())
+}
+
+/// Renders a step back into the command line it was written as, for error
+/// messages.
+fn command_line(program: &str, args: &[Cow<'_, str>]) -> String {
+    std::iter::once(program)
+        .chain(args.iter().map(AsRef::as_ref))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]

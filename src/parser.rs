@@ -62,9 +62,7 @@ impl<'a> Parser<'a> {
                 Token::NewLine | Token::Spaces(_) => {}
                 Token::Indent | Token::Dedent => return Err(ParseError::indentation()),
                 t => match Self::token_text(t) {
-                    Some(name) => file
-                        .insert_task(self.task(name)?)
-                        .map_err(|e| ParseError::new(e.to_string()))?,
+                    Some(name) => file.insert_task(self.task(name)?)?,
                     None => {
                         return Err(ParseError::new(format!("Expected a task name, got {t:?}")));
                     }
