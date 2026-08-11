@@ -13,6 +13,8 @@ cargo run -- validate
 
 This bootstraps the project and then uses it to run the tests, formatter and clippy (see `.jute/tasks.jute`)
 
+Also, after making larger changes, get an adversarial code review to check for bugs, and whether the code can be simplified.
+
 ## Tests
 
 - In tests use the public API of the code under test as much as possible. Avoid additions or changes to the public API purely for the sake of the tests

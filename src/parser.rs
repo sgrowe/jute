@@ -61,7 +61,7 @@ impl<'a> Parser<'a> {
             match token {
                 Token::NewLine | Token::Spaces(_) => {}
                 Token::Indent | Token::Dedent => return Err(ParseError::indentation()),
-                t => match Self::token_text(t) {
+                t => match Self::token_text(&t) {
                     Some(name) => file.insert_task(self.task(name)?)?,
                     None => {
                         return Err(ParseError::new(format!("Expected a task name, got {t:?}")));
@@ -169,6 +169,10 @@ impl<'a> Parser<'a> {
                 Some(Token::Word(w)) => Self::extend_arg(&mut cur_arg, w),
                 Some(Token::Colon) => Self::extend_arg(&mut cur_arg, ":"),
                 Some(Token::Equals) => Self::extend_arg(&mut cur_arg, "="),
+                Some(Token::DoubleQuotedString(s)) => Self::extend_arg(&mut cur_arg, s),
+                Some(Token::UnterminatedString) => {
+                    return Err(ParseError::new("Unterminated string: missing closing `\"`"));
+                }
                 Some(Token::Indent) | Some(Token::Dedent) => {
                     return Err(ParseError::indentation());
                 }
@@ -176,13 +180,16 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Appends `text` to the argument being built, starting a new (borrowed)
-    /// one if none is in progress yet. Only allocates when a token boundary
-    /// (`:`, `=`, a keyword) falls inside a single argument.
-    fn extend_arg(arg: &mut Option<Cow<'a, str>>, text: &'a str) {
+    /// Appends `text` to the argument being built, starting a new (borrowed
+    /// where possible) one if none is in progress yet. Only allocates when a
+    /// token boundary (`:`, `=`, a keyword, an escape inside a quoted
+    /// string) falls inside a single argument.
+    fn extend_arg<S: Into<Cow<'a, str>>>(arg: &mut Option<Cow<'a, str>>, text: S) {
+        let text = text.into();
+
         match arg {
-            Some(a) => a.to_mut().push_str(text),
-            None => *arg = Some(Cow::Borrowed(text)),
+            Some(a) => a.to_mut().push_str(&text),
+            None => *arg = Some(text),
         }
     }
 
@@ -257,9 +264,9 @@ impl<'a> Parser<'a> {
     /// The text of a token that can stand in for a word. `with` and `in` are
     /// keywords wherever they appear, so they have to be turned back into text
     /// in the places the grammar wanted a name, a path or a value.
-    fn token_text(token: Token<'a>) -> Option<&'a str> {
+    fn token_text(token: &Token<'a>) -> Option<&'a str> {
         match token {
-            Token::Word(w) => Some(w),
+            Token::Word(w) => Some(*w),
             Token::With => Some("with"),
             Token::In => Some("in"),
             _ => None,
@@ -269,13 +276,13 @@ impl<'a> Parser<'a> {
     /// The text of the next token, without consuming it, if it can stand in
     /// for a word.
     fn peek_word(&mut self) -> Option<&'a str> {
-        self.tokens.peek().copied().and_then(Self::token_text)
+        self.tokens.peek().and_then(Self::token_text)
     }
 
     fn next_word(&mut self, expectation: &str) -> Result<&'a str, ParseError> {
         let token = self.tokens.next();
 
-        match token.and_then(Self::token_text) {
+        match token.as_ref().and_then(Self::token_text) {
             Some(word) => Ok(word),
             None => Err(ParseError::new(format!("{expectation}, got {token:?}"))),
         }
@@ -748,6 +755,140 @@ clean:
         assert_eq!(
             error.to_string(),
             "`in packages/shared` should have at least one step"
+        );
+    }
+
+    /// The motivating case: a quoted argument holding a space stays one
+    /// argument, and with no escapes to decode it borrows from the source.
+    #[test]
+    fn a_quoted_argument_with_a_space_is_one_borrowed_argument() {
+        let file = parse_tasks_file(
+            "\
+greet:
+  echo \"hello world\"
+",
+        )
+        .expect("source should parse");
+
+        assert_eq!(
+            file,
+            task_file([Task::new(
+                "greet",
+                vec![Step::Command("echo".into(), vec!["hello world".into()])],
+            )])
+        );
+
+        let Step::Command(_, args) = &file.get("greet").expect("greet should exist").steps[0]
+        else {
+            unreachable!("asserted to be a command above")
+        };
+
+        assert!(matches!(args[0], Cow::Borrowed(_)));
+    }
+
+    /// `\"` and `\\` are decoded, which forces the argument to be rebuilt.
+    #[test]
+    fn a_quoted_argument_with_escapes_is_decoded_and_owned() {
+        let file = parse_tasks_file(
+            "\
+greet:
+  echo \"say \\\"hi\\\" or \\\\bye\"
+",
+        )
+        .expect("source should parse");
+
+        assert_eq!(
+            file,
+            task_file([Task::new(
+                "greet",
+                vec![Step::Command(
+                    "echo".into(),
+                    vec!["say \"hi\" or \\bye".into()],
+                )],
+            )])
+        );
+
+        let Step::Command(_, args) = &file.get("greet").expect("greet should exist").steps[0]
+        else {
+            unreachable!("asserted to be a command above")
+        };
+
+        assert!(matches!(args[0], Cow::Owned(_)));
+    }
+
+    /// No space separates a word from an adjacent quoted string, so they're
+    /// the same argument — the same rebuilding `extend_arg` already does for
+    /// `:`/`=`/keywords.
+    #[test]
+    fn a_word_glued_to_a_quoted_string_is_one_argument() {
+        let file = parse_tasks_file(
+            "\
+greet:
+  echo foo\"bar baz\"
+",
+        )
+        .expect("source should parse");
+
+        assert_eq!(
+            file,
+            task_file([Task::new(
+                "greet",
+                vec![Step::Command("echo".into(), vec!["foobar baz".into()])],
+            )])
+        );
+    }
+
+    #[test]
+    fn an_empty_quoted_string_is_an_empty_argument() {
+        let file = parse_tasks_file(
+            "\
+greet:
+  echo \"\"
+",
+        )
+        .expect("source should parse");
+
+        assert_eq!(
+            file,
+            task_file([Task::new(
+                "greet",
+                vec![Step::Command("echo".into(), vec!["".into()])],
+            )])
+        );
+    }
+
+    #[test]
+    fn an_unterminated_quoted_string_is_an_error() {
+        let error = parse_tasks_file(
+            "\
+greet:
+  echo \"oops
+",
+        )
+        .expect_err("an unterminated string should not parse");
+
+        assert_eq!(
+            error.to_string(),
+            "Unterminated string: missing closing `\"`"
+        );
+    }
+
+    /// Quoted strings are single-line only, so a raw newline inside one ends
+    /// it rather than being included in the argument.
+    #[test]
+    fn a_quoted_string_cannot_span_a_newline() {
+        let error = parse_tasks_file(
+            "\
+greet:
+  echo \"hello
+  world\"
+",
+        )
+        .expect_err("a string spanning a newline should not parse");
+
+        assert_eq!(
+            error.to_string(),
+            "Unterminated string: missing closing `\"`"
         );
     }
 }

@@ -1,8 +1,8 @@
-use std::{iter::Peekable, str::CharIndices};
+use std::{borrow::Cow, iter::Peekable, str::CharIndices};
 
 use crate::tokeniser::Token::{Dedent, Indent};
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Token<'a> {
     Indent,
     Dedent,
@@ -16,6 +16,11 @@ pub enum Token<'a> {
     In,
     Equals,
     Word(&'a str),
+    /// The decoded contents of a `"..."` literal, excluding the quotes.
+    /// Borrowed unless `\"` or `\\` forced it to be rebuilt.
+    DoubleQuotedString(Cow<'a, str>),
+    /// A `"` with no closing quote before the end of the line or file.
+    UnterminatedString,
 }
 
 #[derive(Debug)]
@@ -108,6 +113,7 @@ impl<'a> Tokeniser<'a> {
             }
             ':' => Token::Colon,
             '=' => Token::Equals,
+            '"' => self.double_quoted_string(),
             ' ' => {
                 let mut count = 1;
 
@@ -123,7 +129,7 @@ impl<'a> Tokeniser<'a> {
 
                 while self
                     .peek_next_char()
-                    .is_some_and(|c| !['\n', '\r', ':', '=', ' '].contains(&c))
+                    .is_some_and(|c| !['\n', '\r', ':', '=', ' ', '"'].contains(&c))
                 {
                     self.chars.next();
 
@@ -138,13 +144,53 @@ impl<'a> Tokeniser<'a> {
             }
         }
     }
+
+    /// Scans a `"..."` literal after the opening quote has been consumed,
+    /// decoding `\"` and `\\` as it goes. Only allocates once an escape
+    /// forces the result to diverge from the source text.
+    fn double_quoted_string(&mut self) -> Token<'a> {
+        let content_start = self.peek_next_index();
+        let mut owned: Option<String> = None;
+        let mut segment_start = content_start;
+
+        loop {
+            let Some((i, ch)) = self.chars.next() else {
+                return Token::UnterminatedString;
+            };
+
+            match ch {
+                '"' => {
+                    return match owned {
+                        Some(mut s) => {
+                            s.push_str(&self.source[segment_start..i]);
+                            Token::DoubleQuotedString(Cow::Owned(s))
+                        }
+                        None => {
+                            Token::DoubleQuotedString(Cow::Borrowed(&self.source[content_start..i]))
+                        }
+                    };
+                }
+                '\n' | '\r' => return Token::UnterminatedString,
+                '\\' if matches!(self.peek_next_char(), Some('"' | '\\')) => {
+                    let buf = owned.get_or_insert_with(String::new);
+                    buf.push_str(&self.source[segment_start..i]);
+
+                    let (_, escaped) = self.chars.next().expect("just peeked this char");
+                    buf.push(escaped);
+
+                    segment_start = self.peek_next_index();
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Token::*;
     use super::Tokeniser;
-    use std::{fs, path::Path};
+    use std::{borrow::Cow, fs, path::Path};
 
     fn read_example_file(name: &str) -> String {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -274,5 +320,115 @@ mod tests {
         ];
 
         assert_eq!(tokenise("with-dir:\n  for f in *.txt\n"), expected);
+    }
+
+    /// A quoted string is a single token even though it holds a space, so the
+    /// parser doesn't split it into separate arguments.
+    #[test]
+    fn a_quoted_string_with_a_space_is_a_single_token() {
+        #[rustfmt::skip]
+        let expected = vec![
+            Word("t"), Colon, NewLine,
+            Indent, Word("echo"), Spaces(1),
+            DoubleQuotedString(Cow::Borrowed("hello world")), NewLine,
+            Dedent,
+        ];
+
+        assert_eq!(tokenise("t:\n  echo \"hello world\"\n"), expected);
+
+        let DoubleQuotedString(content) = &tokenise("t:\n  echo \"hi\"\n")[6] else {
+            panic!("expected a quoted string token");
+        };
+        assert!(matches!(content, Cow::Borrowed(_)));
+    }
+
+    /// `\"` and `\\` are the only recognised escapes, so decoding one forces
+    /// the token to own its contents.
+    #[test]
+    fn escaped_quotes_and_backslashes_are_decoded() {
+        #[rustfmt::skip]
+        let expected = vec![
+            Word("t"), Colon, NewLine,
+            Indent, Word("echo"), Spaces(1),
+            DoubleQuotedString(Cow::Owned("a\"b\\c".to_string())), NewLine,
+            Dedent,
+        ];
+
+        let tokens = tokenise("t:\n  echo \"a\\\"b\\\\c\"\n");
+        assert_eq!(tokens, expected);
+
+        let DoubleQuotedString(content) = &tokens[6] else {
+            panic!("expected a quoted string token");
+        };
+        assert!(matches!(content, Cow::Owned(_)));
+    }
+
+    /// A backslash followed by anything other than `"` or `\` isn't a
+    /// recognised escape, so it's left in the string untouched.
+    #[test]
+    fn an_unrecognised_backslash_escape_is_left_literal() {
+        #[rustfmt::skip]
+        let expected = vec![
+            Word("t"), Colon, NewLine,
+            Indent, Word("echo"), Spaces(1),
+            DoubleQuotedString(Cow::Borrowed("C:\\path")), NewLine,
+            Dedent,
+        ];
+
+        assert_eq!(tokenise("t:\n  echo \"C:\\path\"\n"), expected);
+    }
+
+    #[test]
+    fn an_empty_quoted_string_is_its_own_token() {
+        #[rustfmt::skip]
+        let expected = vec![
+            Word("t"), Colon, NewLine,
+            Indent, Word("echo"), Spaces(1),
+            DoubleQuotedString(Cow::Borrowed("")), NewLine,
+            Dedent,
+        ];
+
+        assert_eq!(tokenise("t:\n  echo \"\"\n"), expected);
+    }
+
+    /// No space separates a word from an adjacent quoted string, so they
+    /// stay two distinct tokens here — it's the parser's job to glue tokens
+    /// with no space between them into one argument.
+    #[test]
+    fn a_quoted_string_glued_to_a_word_is_two_tokens() {
+        #[rustfmt::skip]
+        let expected = vec![
+            Word("t"), Colon, NewLine,
+            Indent, Word("echo"), Spaces(1), Word("foo"),
+            DoubleQuotedString(Cow::Borrowed("bar")), NewLine,
+            Dedent,
+        ];
+
+        assert_eq!(tokenise("t:\n  echo foo\"bar\"\n"), expected);
+    }
+
+    /// A quoted string can't span a newline, so one reaching the end of the
+    /// line without a closing quote is unterminated.
+    #[test]
+    fn a_newline_before_the_closing_quote_is_unterminated() {
+        #[rustfmt::skip]
+        let expected = vec![
+            Word("t"), Colon, NewLine,
+            Indent, Word("echo"), Spaces(1), UnterminatedString,
+        ];
+
+        assert_eq!(tokenise("t:\n  echo \"oops\n"), expected);
+    }
+
+    /// Running out of source without a closing quote is unterminated too.
+    #[test]
+    fn the_end_of_the_file_before_the_closing_quote_is_unterminated() {
+        #[rustfmt::skip]
+        let expected = vec![
+            Word("t"), Colon, NewLine,
+            Indent, Word("echo"), Spaces(1), UnterminatedString,
+        ];
+
+        assert_eq!(tokenise("t:\n  echo \"oops"), expected);
     }
 }
