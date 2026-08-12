@@ -21,6 +21,7 @@ pub mod test_utils {
 
     use std::ffi::OsString;
     use std::os::unix::process::ExitStatusExt;
+    use std::path::PathBuf;
 
     /// Records the commands it is handed rather than running them, and reports
     /// every one of them as having succeeded.
@@ -41,6 +42,7 @@ pub mod test_utils {
     #[derive(Debug)]
     pub struct CommandSnapshot {
         pub command: Vec<OsString>,
+        pub cwd: Option<PathBuf>,
         pub envs: Vec<(OsString, OsString)>,
     }
 
@@ -51,6 +53,7 @@ pub mod test_utils {
                     .chain(cmd.get_args())
                     .map(ToOwned::to_owned)
                     .collect(),
+                cwd: cmd.get_current_dir().map(ToOwned::to_owned),
                 envs: cmd
                     .get_envs()
                     .filter_map(|(k, v)| Some((k.to_owned(), v?.to_owned())))

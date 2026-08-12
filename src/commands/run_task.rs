@@ -31,7 +31,7 @@ pub fn run_task<R: CommandRunner>(
 
 fn run_steps<R: CommandRunner>(
     steps: &[Step],
-    root: &Path,
+    cwd: &Path,
     env: &BTreeMap<&str, &str>,
     runner: &mut R,
 ) -> JuteResult<()> {
@@ -40,6 +40,8 @@ fn run_steps<R: CommandRunner>(
             Step::Command(program, args) => {
                 let mut cmd = Command::new(program.as_ref());
                 cmd.args(args.iter().map(AsRef::as_ref));
+
+                cmd.current_dir(cwd);
                 cmd.envs(env);
 
                 let status = runner.exec(cmd).with_context(|| {
@@ -55,7 +57,7 @@ fn run_steps<R: CommandRunner>(
                     });
                 }
             }
-            Step::InSubDir { path, steps } => run_steps(steps, &root.join(path), env, runner)?,
+            Step::InSubDir { path, steps } => run_steps(steps, &cwd.join(path), env, runner)?,
             Step::With {
                 env: env_vars,
                 steps,
@@ -64,7 +66,7 @@ fn run_steps<R: CommandRunner>(
 
                 new_env.extend(env_vars.iter().map(EnvVar::to_tuple));
 
-                run_steps(steps, root, &new_env, runner)?
+                run_steps(steps, cwd, &new_env, runner)?
             }
         }
     }
@@ -134,6 +136,7 @@ greet:
   echo before
   with GREETING=hi:
     echo inside
+  echo after
 ",
         );
 
@@ -147,6 +150,7 @@ greet:
             runner.commands[1].envs,
             vec![(OsString::from("GREETING"), OsString::from("hi"))]
         );
+        assert_eq!(runner.commands[2].envs, vec![]);
     }
 
     #[test]
@@ -173,5 +177,48 @@ greet:
                 (OsString::from("B"), OsString::from("2")),
             ]
         );
+    }
+
+    #[test]
+    fn in_step_changes_cwd_for_commands_inside_it() {
+        let root = write_project(
+            "jute-in-step-changes-cwd-for-commands-inside-it",
+            "\
+greet:
+  echo before
+  in sub:
+    echo inside
+  echo after
+",
+        );
+
+        let mut runner = RecordingRunner::default();
+        let result = run_task("greet", &[], &root, &mut runner);
+
+        result.unwrap();
+
+        assert_eq!(runner.commands[0].cwd, Some(root.clone()));
+        assert_eq!(runner.commands[1].cwd, Some(root.join("sub")));
+        assert_eq!(runner.commands[2].cwd, Some(root.clone()));
+    }
+
+    #[test]
+    fn nested_in_blocks_join_directories() {
+        let root = write_project(
+            "jute-nested-in-blocks-join-directories",
+            "\
+greet:
+  in a:
+    in b:
+      echo hello
+",
+        );
+
+        let mut runner = RecordingRunner::default();
+        let result = run_task("greet", &[], &root, &mut runner);
+
+        result.unwrap();
+
+        assert_eq!(runner.commands[0].cwd, Some(root.join("a").join("b")));
     }
 }
