@@ -1,0 +1,124 @@
+# Generated from [docs/specs/release_flow.md](../../docs/specs/release_flow.md)
+
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Assert tag matches Cargo.toml version
+        run: |
+          set -euo pipefail
+          cargo_version=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[0].version')
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$cargo_version" != "$tag_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME (version $tag_version) does not match Cargo.toml version $cargo_version"
+            exit 1
+          fi
+
+  build:
+    needs: check-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos
+            runs-on: macos-14
+            cross-target: x86_64-apple-darwin
+            artifact-file: jute-macos-aarch64
+            cross-artifact-file: jute-macos-x86_64
+          - name: linux-x86_64
+            runs-on: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact-file: jute-linux-x86_64
+          - name: linux-aarch64
+            runs-on: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            artifact-file: jute-linux-aarch64
+    runs-on: ${{ matrix.runs-on }}
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install extra Rust target(s)
+        run: rustup target add ${{ matrix.name == 'macos' && matrix.cross-target || matrix.target }}
+
+      - name: Ensure rustfmt/clippy are installed
+        run: rustup component add rustfmt clippy
+
+      - name: Install musl toolchain
+        if: matrix.name != 'macos'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - run: mkdir -p dist
+
+      - name: Build + test (aarch64-apple-darwin, native)
+        if: matrix.name == 'macos'
+        run: cargo run --release -- test
+
+      - name: Build + test (x86_64-apple-darwin, via Rosetta)
+        if: matrix.name == 'macos'
+        run: cargo run --release --target ${{ matrix.cross-target }} -- test
+
+      - name: Stage macOS binaries
+        if: matrix.name == 'macos'
+        run: |
+          cp target/release/jute dist/${{ matrix.artifact-file }}
+          cp target/${{ matrix.cross-target }}/release/jute dist/${{ matrix.cross-artifact-file }}
+
+      - name: Build + test (musl)
+        if: matrix.name != 'macos'
+        run: cargo run --release --target ${{ matrix.target }} -- test
+
+      - name: Stage Linux binary
+        if: matrix.name != 'macos'
+        run: cp target/${{ matrix.target }}/release/jute dist/${{ matrix.artifact-file }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: binaries-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Build size table
+        run: |
+          set -euo pipefail
+          {
+            echo "| Binary | Size |"
+            echo "|---|---|"
+            total=0
+            for f in dist/*; do
+              size=$(stat --format=%s "$f")
+              total=$((total + size))
+              echo "| $(basename "$f") | $(numfmt --to=iec-i --suffix=B "$size") |"
+            done
+            echo "| **Total** | $(numfmt --to=iec-i --suffix=B "$total") |"
+          } > release-notes.md
+
+      - name: Create GitHub release
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file release-notes.md
