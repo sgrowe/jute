@@ -6,3 +6,9 @@ validate:
     cargo fmt
     cargo clippy  --quiet --fix --all-targets --allow-dirty
     cargo test --quiet
+
+
+test:
+    cargo fmt --check
+    cargo clippy --all-targets
+    cargo test --quiet
