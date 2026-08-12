@@ -41,6 +41,7 @@ pub mod test_utils {
     #[derive(Debug)]
     pub struct CommandSnapshot {
         pub command: Vec<OsString>,
+        pub envs: Vec<(OsString, OsString)>,
     }
 
     impl From<Command> for CommandSnapshot {
@@ -49,6 +50,10 @@ pub mod test_utils {
                 command: std::iter::once(cmd.get_program())
                     .chain(cmd.get_args())
                     .map(ToOwned::to_owned)
+                    .collect(),
+                envs: cmd
+                    .get_envs()
+                    .filter_map(|(k, v)| Some((k.to_owned(), v?.to_owned())))
                     .collect(),
             }
         }

@@ -69,4 +69,8 @@ impl<'a> EnvVar<'a> {
     pub fn new(name: &'a str, value: &'a str) -> Self {
         Self { name, value }
     }
+
+    pub fn to_tuple(&self) -> (&str, &str) {
+        (self.name, self.value)
+    }
 }
