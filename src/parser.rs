@@ -169,9 +169,13 @@ impl<'a> Parser<'a> {
                 Some(Token::Word(w)) => Self::extend_arg(&mut cur_arg, w),
                 Some(Token::Colon) => Self::extend_arg(&mut cur_arg, ":"),
                 Some(Token::Equals) => Self::extend_arg(&mut cur_arg, "="),
-                Some(Token::DoubleQuotedString(s)) => Self::extend_arg(&mut cur_arg, s),
-                Some(Token::UnterminatedString) => {
-                    return Err(ParseError::new("Unterminated string: missing closing `\"`"));
+                Some(Token::DoubleQuotedString(s) | Token::SingleQuotedString(s)) => {
+                    Self::extend_arg(&mut cur_arg, s)
+                }
+                Some(Token::UnterminatedString(quote)) => {
+                    return Err(ParseError::new(format!(
+                        "Unterminated string: missing closing `{quote}`"
+                    )));
                 }
                 Some(Token::Indent) | Some(Token::Dedent) => {
                     return Err(ParseError::indentation());
@@ -407,12 +411,7 @@ mod tests {
                         "&&".into(),
                         "psql".into(),
                         "-c".into(),
-                        "'CREATE".into(),
-                        "EXTENSION".into(),
-                        "IF".into(),
-                        "NOT".into(),
-                        "EXISTS".into(),
-                        "vector;'".into(),
+                        "CREATE EXTENSION IF NOT EXISTS vector;".into(),
                     ],
                 )],
             ),
@@ -568,7 +567,7 @@ build:
         let file = parse_tasks_file(
             "\
 fix:
-  sed 's/a   b/c/' file
+  sed s/a   b/c/ file
 ",
         )
         .expect("source should parse");
@@ -579,7 +578,7 @@ fix:
                 "fix",
                 vec![Step::Command(
                     "sed".into(),
-                    vec!["'s/a".into(), "b/c/'".into(), "file".into()],
+                    vec!["s/a".into(), "b/c/".into(), "file".into()],
                 )],
             )])
         );
@@ -761,7 +760,7 @@ clean:
     /// The motivating case: a quoted argument holding a space stays one
     /// argument, and with no escapes to decode it borrows from the source.
     #[test]
-    fn a_quoted_argument_with_a_space_is_one_borrowed_argument() {
+    fn a_double_quoted_argument_with_a_space_is_one_borrowed_argument() {
         let file = parse_tasks_file(
             "\
 greet:
@@ -788,7 +787,7 @@ greet:
 
     /// `\"` and `\\` are decoded, which forces the argument to be rebuilt.
     #[test]
-    fn a_quoted_argument_with_escapes_is_decoded_and_owned() {
+    fn a_double_quoted_argument_with_escapes_is_decoded_and_owned() {
         let file = parse_tasks_file(
             "\
 greet:
@@ -820,7 +819,7 @@ greet:
     /// the same argument — the same rebuilding `extend_arg` already does for
     /// `:`/`=`/keywords.
     #[test]
-    fn a_word_glued_to_a_quoted_string_is_one_argument() {
+    fn a_word_glued_to_a_double_quoted_string_is_one_argument() {
         let file = parse_tasks_file(
             "\
 greet:
@@ -839,7 +838,7 @@ greet:
     }
 
     #[test]
-    fn an_empty_quoted_string_is_an_empty_argument() {
+    fn an_empty_double_quoted_string_is_an_empty_argument() {
         let file = parse_tasks_file(
             "\
 greet:
@@ -858,7 +857,7 @@ greet:
     }
 
     #[test]
-    fn an_unterminated_quoted_string_is_an_error() {
+    fn an_unterminated_double_quoted_string_is_an_error() {
         let error = parse_tasks_file(
             "\
 greet:
@@ -876,7 +875,7 @@ greet:
     /// Quoted strings are single-line only, so a raw newline inside one ends
     /// it rather than being included in the argument.
     #[test]
-    fn a_quoted_string_cannot_span_a_newline() {
+    fn a_double_quoted_string_cannot_span_a_newline() {
         let error = parse_tasks_file(
             "\
 greet:
@@ -889,6 +888,161 @@ greet:
         assert_eq!(
             error.to_string(),
             "Unterminated string: missing closing `\"`"
+        );
+    }
+
+    /// Single quotes group an argument holding a space just as double quotes
+    /// do, and with no escapes to decode the argument borrows from the source.
+    #[test]
+    fn a_single_quoted_argument_with_a_space_is_one_borrowed_argument() {
+        let file = parse_tasks_file(
+            "\
+greet:
+  echo 'hello world'
+",
+        )
+        .expect("source should parse");
+
+        assert_eq!(
+            file,
+            task_file([Task::new(
+                "greet",
+                vec![Step::Command("echo".into(), vec!["hello world".into()])],
+            )])
+        );
+
+        let Step::Command(_, args) = &file.get("greet").expect("greet should exist").steps[0]
+        else {
+            unreachable!("asserted to be a command above")
+        };
+
+        assert!(matches!(args[0], Cow::Borrowed(_)));
+    }
+
+    /// `\'` and `\\` are decoded, which forces the argument to be rebuilt.
+    #[test]
+    fn a_single_quoted_argument_with_escapes_is_decoded_and_owned() {
+        let file = parse_tasks_file(
+            "\
+greet:
+  echo 'say \\'hi\\' or \\\\bye'
+",
+        )
+        .expect("source should parse");
+
+        assert_eq!(
+            file,
+            task_file([Task::new(
+                "greet",
+                vec![Step::Command(
+                    "echo".into(),
+                    vec!["say 'hi' or \\bye".into()]
+                )],
+            )])
+        );
+
+        let Step::Command(_, args) = &file.get("greet").expect("greet should exist").steps[0]
+        else {
+            unreachable!("asserted to be a command above")
+        };
+
+        assert!(matches!(args[0], Cow::Owned(_)));
+    }
+
+    /// Spaces are an argument separator outside a quoted string but ordinary
+    /// characters inside one, so a run of them survives intact.
+    #[test]
+    fn a_run_of_spaces_inside_a_quoted_string_is_kept_verbatim() {
+        let file = parse_tasks_file(
+            "\
+fix:
+  sed 's/a   b/c/' file
+",
+        )
+        .expect("source should parse");
+
+        assert_eq!(
+            file,
+            task_file([Task::new(
+                "fix",
+                vec![Step::Command(
+                    "sed".into(),
+                    vec!["s/a   b/c/".into(), "file".into()],
+                )],
+            )])
+        );
+    }
+
+    #[test]
+    fn a_word_glued_to_a_single_quoted_string_is_one_argument() {
+        let file = parse_tasks_file(
+            "\
+greet:
+  echo foo'bar baz'
+",
+        )
+        .expect("source should parse");
+
+        assert_eq!(
+            file,
+            task_file([Task::new(
+                "greet",
+                vec![Step::Command("echo".into(), vec!["foobar baz".into()])],
+            )])
+        );
+    }
+
+    #[test]
+    fn an_empty_single_quoted_string_is_an_empty_argument() {
+        let file = parse_tasks_file(
+            "\
+greet:
+  echo ''
+",
+        )
+        .expect("source should parse");
+
+        assert_eq!(
+            file,
+            task_file([Task::new(
+                "greet",
+                vec![Step::Command("echo".into(), vec!["".into()])],
+            )])
+        );
+    }
+
+    /// The error names the quote that opened the string, not whichever one the
+    /// tokeniser happens to scan first.
+    #[test]
+    fn an_unterminated_single_quoted_string_is_an_error() {
+        let error = parse_tasks_file(
+            "\
+greet:
+  echo 'oops
+",
+        )
+        .expect_err("an unterminated string should not parse");
+
+        assert_eq!(
+            error.to_string(),
+            "Unterminated string: missing closing `'`"
+        );
+    }
+
+    #[test]
+    fn a_single_quoted_string_cannot_span_a_newline() {
+        let error = parse_tasks_file(
+            "\
+greet:
+  echo 'hello
+  world'
+",
+        )
+        .expect_err("a string spanning a newline should not parse");
+
+        assert_eq!(
+            error.to_string(),
+            "Unterminated string: missing closing `'`"
         );
     }
 }

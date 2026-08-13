@@ -127,6 +127,28 @@ farewell:
         assert_eq!(runner.commands[1].command, vec!["echo", "goodbye"],);
     }
 
+    /// A quoted argument reaches the command as one argument, so the space
+    /// inside it doesn't become an argument separator.
+    #[test]
+    fn a_quoted_argument_is_passed_to_the_command_as_one_argument() {
+        let root = write_project(
+            "jute-a-quoted-argument-is-passed-as-one-argument",
+            "\
+greet:
+  echo 'hello world'
+  echo \"hello world\"
+",
+        );
+
+        let mut runner = RecordingRunner::default();
+        let result = run_task("greet", &[], &root, &mut runner);
+
+        result.unwrap();
+
+        assert_eq!(runner.commands[0].command, vec!["echo", "hello world"]);
+        assert_eq!(runner.commands[1].command, vec!["echo", "hello world"]);
+    }
+
     #[test]
     fn with_step_sets_env_vars_for_commands_inside_it() {
         let root = write_project(
