@@ -127,10 +127,9 @@ impl<'a> Tokeniser<'a> {
             _ => {
                 let mut end_index = self.peek_next_index();
 
-                while self
-                    .peek_next_char()
-                    .is_some_and(|c| !['\n', '\r', ':', '=', ' ', '"'].contains(&c))
-                {
+                let not_special = |c: char| !matches!(c, '\n' | '\r' | ':' | '=' | ' ' | '"');
+
+                while self.peek_next_char().is_some_and(not_special) {
                     self.chars.next();
 
                     end_index = self.peek_next_index();
