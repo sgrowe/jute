@@ -19,8 +19,12 @@ pub enum Token<'a> {
     /// The decoded contents of a `"..."` literal, excluding the quotes.
     /// Borrowed unless `\"` or `\\` forced it to be rebuilt.
     DoubleQuotedString(Cow<'a, str>),
-    /// A `"` with no closing quote before the end of the line or file.
-    UnterminatedString,
+    /// The decoded contents of a `'...'` literal, excluding the quotes.
+    /// Borrowed unless `\'` or `\\` forced it to be rebuilt.
+    SingleQuotedString(Cow<'a, str>),
+    /// A quote with no closing quote before the end of the line or file,
+    /// carrying the quote character that opened it.
+    UnterminatedString(char),
 }
 
 #[derive(Debug)]
@@ -113,7 +117,8 @@ impl<'a> Tokeniser<'a> {
             }
             ':' => Token::Colon,
             '=' => Token::Equals,
-            '"' => self.double_quoted_string(),
+            '"' => self.quoted_string('"', Token::DoubleQuotedString),
+            '\'' => self.quoted_string('\'', Token::SingleQuotedString),
             ' ' => {
                 let mut count = 1;
 
@@ -127,7 +132,8 @@ impl<'a> Tokeniser<'a> {
             _ => {
                 let mut end_index = self.peek_next_index();
 
-                let not_special = |c: char| !matches!(c, '\n' | '\r' | ':' | '=' | ' ' | '"');
+                let not_special =
+                    |c: char| !matches!(c, '\n' | '\r' | ':' | '=' | ' ' | '"' | '\'');
 
                 while self.peek_next_char().is_some_and(not_special) {
                     self.chars.next();
@@ -144,33 +150,38 @@ impl<'a> Tokeniser<'a> {
         }
     }
 
-    /// Scans a `"..."` literal after the opening quote has been consumed,
-    /// decoding `\"` and `\\` as it goes. Only allocates once an escape
-    /// forces the result to diverge from the source text.
-    fn double_quoted_string(&mut self) -> Token<'a> {
+    /// Scans a literal delimited by `quote` after the opening quote has been
+    /// consumed, decoding `\<quote>` and `\\` as it goes. Only allocates once
+    /// an escape forces the result to diverge from the source text.
+    fn quoted_string(
+        &mut self,
+        quote: char,
+        make_token: fn(Cow<'a, str>) -> Token<'a>,
+    ) -> Token<'a> {
         let content_start = self.peek_next_index();
         let mut owned: Option<String> = None;
         let mut segment_start = content_start;
 
         loop {
             let Some((i, ch)) = self.chars.next() else {
-                return Token::UnterminatedString;
+                return Token::UnterminatedString(quote);
             };
 
             match ch {
-                '"' => {
+                _ if ch == quote => {
                     return match owned {
                         Some(mut s) => {
                             s.push_str(&self.source[segment_start..i]);
-                            Token::DoubleQuotedString(Cow::Owned(s))
+                            make_token(Cow::Owned(s))
                         }
-                        None => {
-                            Token::DoubleQuotedString(Cow::Borrowed(&self.source[content_start..i]))
-                        }
+                        None => make_token(Cow::Borrowed(&self.source[content_start..i])),
                     };
                 }
-                '\n' | '\r' => return Token::UnterminatedString,
-                '\\' if matches!(self.peek_next_char(), Some('"' | '\\')) => {
+                '\n' | '\r' => return Token::UnterminatedString(quote),
+                '\\' if self
+                    .peek_next_char()
+                    .is_some_and(|c| c == quote || c == '\\') =>
+                {
                     let buf = owned.get_or_insert_with(String::new);
                     buf.push_str(&self.source[segment_start..i]);
 
@@ -254,9 +265,8 @@ mod tests {
             Dedent, Dedent, Word("test-create-db"), Colon, NewLine,
             // 21:   createdb test_db && psql -c 'CREATE EXTENSION IF NOT EXISTS vector;'
             Indent, Word("createdb"), Spaces(1), Word("test_db"), Spaces(1), Word("&&"), Spaces(1),
-            Word("psql"), Spaces(1), Word("-c"), Spaces(1), Word("'CREATE"), Spaces(1),
-            Word("EXTENSION"), Spaces(1), Word("IF"), Spaces(1), Word("NOT"), Spaces(1),
-            Word("EXISTS"), Spaces(1), Word("vector;'"), NewLine,
+            Word("psql"), Spaces(1), Word("-c"), Spaces(1),
+            SingleQuotedString(Cow::Borrowed("CREATE EXTENSION IF NOT EXISTS vector;")), NewLine,
             // 22:
             NewLine,
             // 23: test-migrate:
@@ -298,11 +308,11 @@ mod tests {
         #[rustfmt::skip]
         let expected = vec![
             Word("t"), Colon, NewLine,
-            Indent, Word("sed"), Spaces(1), Word("'s/a"), Spaces(3), Word("b/c/'"), NewLine,
+            Indent, Word("sed"), Spaces(1), Word("s/a"), Spaces(3), Word("b/c/"), NewLine,
             Dedent,
         ];
 
-        assert_eq!(tokenise("t:\n  sed 's/a   b/c/'\n"), expected);
+        assert_eq!(tokenise("t:\n  sed s/a   b/c/\n"), expected);
     }
 
     /// `with` and `in` are matched as whole words, so `with-dir` is a name and
@@ -324,7 +334,7 @@ mod tests {
     /// A quoted string is a single token even though it holds a space, so the
     /// parser doesn't split it into separate arguments.
     #[test]
-    fn a_quoted_string_with_a_space_is_a_single_token() {
+    fn a_double_quoted_string_with_a_space_is_a_single_token() {
         #[rustfmt::skip]
         let expected = vec![
             Word("t"), Colon, NewLine,
@@ -344,7 +354,7 @@ mod tests {
     /// `\"` and `\\` are the only recognised escapes, so decoding one forces
     /// the token to own its contents.
     #[test]
-    fn escaped_quotes_and_backslashes_are_decoded() {
+    fn escaped_double_quotes_and_backslashes_are_decoded() {
         #[rustfmt::skip]
         let expected = vec![
             Word("t"), Colon, NewLine,
@@ -365,7 +375,7 @@ mod tests {
     /// A backslash followed by anything other than `"` or `\` isn't a
     /// recognised escape, so it's left in the string untouched.
     #[test]
-    fn an_unrecognised_backslash_escape_is_left_literal() {
+    fn an_unrecognised_backslash_escape_in_a_double_quoted_string_is_left_literal() {
         #[rustfmt::skip]
         let expected = vec![
             Word("t"), Colon, NewLine,
@@ -378,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_quoted_string_is_its_own_token() {
+    fn an_empty_double_quoted_string_is_its_own_token() {
         #[rustfmt::skip]
         let expected = vec![
             Word("t"), Colon, NewLine,
@@ -394,7 +404,7 @@ mod tests {
     /// stay two distinct tokens here — it's the parser's job to glue tokens
     /// with no space between them into one argument.
     #[test]
-    fn a_quoted_string_glued_to_a_word_is_two_tokens() {
+    fn a_double_quoted_string_glued_to_a_word_is_two_tokens() {
         #[rustfmt::skip]
         let expected = vec![
             Word("t"), Colon, NewLine,
@@ -409,11 +419,11 @@ mod tests {
     /// A quoted string can't span a newline, so one reaching the end of the
     /// line without a closing quote is unterminated.
     #[test]
-    fn a_newline_before_the_closing_quote_is_unterminated() {
+    fn a_newline_before_the_closing_double_quote_is_unterminated() {
         #[rustfmt::skip]
         let expected = vec![
             Word("t"), Colon, NewLine,
-            Indent, Word("echo"), Spaces(1), UnterminatedString,
+            Indent, Word("echo"), Spaces(1), UnterminatedString('"'),
         ];
 
         assert_eq!(tokenise("t:\n  echo \"oops\n"), expected);
@@ -421,13 +431,142 @@ mod tests {
 
     /// Running out of source without a closing quote is unterminated too.
     #[test]
-    fn the_end_of_the_file_before_the_closing_quote_is_unterminated() {
+    fn the_end_of_the_file_before_the_closing_double_quote_is_unterminated() {
         #[rustfmt::skip]
         let expected = vec![
             Word("t"), Colon, NewLine,
-            Indent, Word("echo"), Spaces(1), UnterminatedString,
+            Indent, Word("echo"), Spaces(1), UnterminatedString('"'),
         ];
 
         assert_eq!(tokenise("t:\n  echo \"oops"), expected);
+    }
+
+    /// Single quotes group a run of words into one token just as double quotes
+    /// do, and are a token of their own so the two can diverge later.
+    #[test]
+    fn a_single_quoted_string_with_a_space_is_a_single_token() {
+        #[rustfmt::skip]
+        let expected = vec![
+            Word("t"), Colon, NewLine,
+            Indent, Word("echo"), Spaces(1),
+            SingleQuotedString(Cow::Borrowed("hello world")), NewLine,
+            Dedent,
+        ];
+
+        assert_eq!(tokenise("t:\n  echo 'hello world'\n"), expected);
+
+        let SingleQuotedString(content) = &tokenise("t:\n  echo 'hi'\n")[6] else {
+            panic!("expected a quoted string token");
+        };
+        assert!(matches!(content, Cow::Borrowed(_)));
+    }
+
+    /// `\'` and `\\` are the only recognised escapes, so decoding one forces
+    /// the token to own its contents.
+    #[test]
+    fn escaped_single_quotes_and_backslashes_are_decoded() {
+        #[rustfmt::skip]
+        let expected = vec![
+            Word("t"), Colon, NewLine,
+            Indent, Word("echo"), Spaces(1),
+            SingleQuotedString(Cow::Owned("a'b\\c".to_string())), NewLine,
+            Dedent,
+        ];
+
+        let tokens = tokenise("t:\n  echo 'a\\'b\\\\c'\n");
+        assert_eq!(tokens, expected);
+
+        let SingleQuotedString(content) = &tokens[6] else {
+            panic!("expected a quoted string token");
+        };
+        assert!(matches!(content, Cow::Owned(_)));
+    }
+
+    /// A backslash followed by anything other than `'` or `\` isn't a
+    /// recognised escape, so it's left in the string untouched.
+    #[test]
+    fn an_unrecognised_backslash_escape_in_a_single_quoted_string_is_left_literal() {
+        #[rustfmt::skip]
+        let expected = vec![
+            Word("t"), Colon, NewLine,
+            Indent, Word("echo"), Spaces(1),
+            SingleQuotedString(Cow::Borrowed("C:\\path")), NewLine,
+            Dedent,
+        ];
+
+        assert_eq!(tokenise("t:\n  echo 'C:\\path'\n"), expected);
+    }
+
+    #[test]
+    fn an_empty_single_quoted_string_is_its_own_token() {
+        #[rustfmt::skip]
+        let expected = vec![
+            Word("t"), Colon, NewLine,
+            Indent, Word("echo"), Spaces(1),
+            SingleQuotedString(Cow::Borrowed("")), NewLine,
+            Dedent,
+        ];
+
+        assert_eq!(tokenise("t:\n  echo ''\n"), expected);
+    }
+
+    #[test]
+    fn a_single_quoted_string_glued_to_a_word_is_two_tokens() {
+        #[rustfmt::skip]
+        let expected = vec![
+            Word("t"), Colon, NewLine,
+            Indent, Word("echo"), Spaces(1), Word("foo"),
+            SingleQuotedString(Cow::Borrowed("bar")), NewLine,
+            Dedent,
+        ];
+
+        assert_eq!(tokenise("t:\n  echo foo'bar'\n"), expected);
+    }
+
+    #[test]
+    fn a_newline_before_the_closing_single_quote_is_unterminated() {
+        #[rustfmt::skip]
+        let expected = vec![
+            Word("t"), Colon, NewLine,
+            Indent, Word("echo"), Spaces(1), UnterminatedString('\''),
+        ];
+
+        assert_eq!(tokenise("t:\n  echo 'oops\n"), expected);
+    }
+
+    #[test]
+    fn the_end_of_the_file_before_the_closing_single_quote_is_unterminated() {
+        #[rustfmt::skip]
+        let expected = vec![
+            Word("t"), Colon, NewLine,
+            Indent, Word("echo"), Spaces(1), UnterminatedString('\''),
+        ];
+
+        assert_eq!(tokenise("t:\n  echo 'oops"), expected);
+    }
+
+    /// Only the quote that opened a string closes it, so the other quote
+    /// character needs no escaping inside one.
+    #[test]
+    fn the_other_quote_character_is_ordinary_inside_a_string() {
+        #[rustfmt::skip]
+        let expected = vec![
+            Word("t"), Colon, NewLine,
+            Indent, Word("echo"), Spaces(1),
+            DoubleQuotedString(Cow::Borrowed("it's")), NewLine,
+            Dedent,
+        ];
+
+        assert_eq!(tokenise("t:\n  echo \"it's\"\n"), expected);
+
+        #[rustfmt::skip]
+        let expected = vec![
+            Word("t"), Colon, NewLine,
+            Indent, Word("echo"), Spaces(1),
+            SingleQuotedString(Cow::Borrowed("say \"hi\"")), NewLine,
+            Dedent,
+        ];
+
+        assert_eq!(tokenise("t:\n  echo 'say \"hi\"'\n"), expected);
     }
 }
