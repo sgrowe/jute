@@ -32,6 +32,7 @@ jobs:
           fi
 
   build:
+    name: build (${{ matrix.name }})
     needs: check-version
     if: always() && (needs.check-version.result == 'success' || needs.check-version.result == 'skipped')
     strategy:
@@ -40,9 +41,8 @@ jobs:
         include:
           - name: macos
             runs-on: macos-14
-            cross-target: x86_64-apple-darwin
+            target: aarch64-apple-darwin
             artifact-file: jute-macos-aarch64
-            cross-artifact-file: jute-macos-x86_64
           - name: linux-x86_64
             runs-on: ubuntu-latest
             target: x86_64-unknown-linux-musl
@@ -55,11 +55,12 @@ jobs:
     env:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      RUST_BACKTRACE: full
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install extra Rust target(s)
-        run: rustup target add ${{ matrix.name == 'macos' && matrix.cross-target || matrix.target }}
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
 
       - name: Ensure rustfmt/clippy are installed
         run: rustup component add rustfmt clippy
@@ -70,26 +71,10 @@ jobs:
 
       - run: mkdir -p dist
 
-      - name: Build + test (aarch64-apple-darwin, native)
-        if: matrix.name == 'macos'
-        run: cargo run --release -- test
-
-      - name: Build + test (x86_64-apple-darwin, via Rosetta)
-        if: matrix.name == 'macos'
-        run: cargo run --release --target ${{ matrix.cross-target }} -- test
-
-      - name: Stage macOS binaries
-        if: matrix.name == 'macos'
-        run: |
-          cp target/release/jute dist/${{ matrix.artifact-file }}
-          cp target/${{ matrix.cross-target }}/release/jute dist/${{ matrix.cross-artifact-file }}
-
-      - name: Build + test (musl)
-        if: matrix.name != 'macos'
+      - name: Build + test
         run: cargo run --release --target ${{ matrix.target }} -- test
 
-      - name: Stage Linux binary
-        if: matrix.name != 'macos'
+      - name: Stage binary
         run: cp target/${{ matrix.target }}/release/jute dist/${{ matrix.artifact-file }}
 
       - uses: actions/upload-artifact@v7
@@ -100,6 +85,7 @@ jobs:
 
   report:
     needs: build
+    if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
