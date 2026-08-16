@@ -35,9 +35,10 @@ fn run() -> JuteResult<()> {
         CliArgs::ShowHelp => show_help(),
         CliArgs::ListCommands => list_tasks(),
         CliArgs::Install => {
+            let mut cmd_runner = BashCommandRunner {};
             let cwd = current_dir()?;
 
-            install(&cwd)
+            install(&cwd, &mut cmd_runner)
         }
     }
 }

@@ -5,14 +5,14 @@
 ### Release pipeline spec
 
 - Trigger a github action on pushes to `vx.y.z` git tag (should match `CARGO_PKG_VERSION` - assert that this is the case)
-- Run a matrix over:
-  - Apple silicon mac
-  - Intel linux
-  - ARM linux
+- Run a matrix over the platforms listed in [docs/specs/supported_platforms.md](./supported_platforms.md):
+  - Apple silicon macOS
+  - Intel Linux
+  - ARM Linux
 - Each runner should run `cargo run --release -- test` to ensure jute works on that platform
 - Linux builds should use statically linked musl for max compatibility
 - If testing and building on all runners succeeds, then create a github release with those builds as artifacts
-- Binaries should use the same naming convention as in [docs/specs/install_command.md]
+- Binaries should use the same naming convention as in [docs/specs/supported_platforms.md](./supported_platforms.md)
 - The github release should include a table of the file size of each binary (+ the total)
 
 ### Download link url format

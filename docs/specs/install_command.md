@@ -2,14 +2,19 @@
 
 ## Flow
 
-- create `.jute/` dir if not exists
-- create/overwrite `.jute/run` script from default
+- create `.jute/` dir if not exists (in current working dir)
+- create/overwrite `.jute/run` script (source: `src/templates/run`)
   - make it executable
-- create default `.jute/tasks.jute` if not exists already (don't overwrite a users existing tasks files if they already have one)
-
+- create default `.jute/tasks.jute` if it doesn’t already exist (don't overwrite a users existing tasks file if they already have one)
 - create `.jute/bin/` dir if not exists
 - get the current OS and arch of the current binary using Rust's `std::env::consts::OS` etc, and copy `std::env::current_exe()` there
-- TODO (need to setup CI first): for the remaining architectures download the binaries from GitHub releases using `curl`
+- for the remaining platforms in [docs/specs/supported_platforms.md](./supported_platforms.md) download the binaries from GitHub releases using `curl` (see [docs/specs/ci_cd_flow.md](./ci_cd_flow.md) for the download URL format) and mark them as executable
+  - fetch the binaries for the same version as the current executable (i.e. `CARGO_PKG_VERSION`)
+  - fail on HTTP errors (e.g. curl's `--fail` flag)
+  - obey HTTP redirects (e.g. the `--location` flag)
+  - use 5 retries
+  - max time per retry attempt: 5 mins
+- for failed curl commands output the full command output (stdout and stderr) to the user (plus a "curl failed with exit code X") message and the `jute --install` command as a whole should fail
 
 ## Target folder structure
 
@@ -25,11 +30,8 @@
     jute-linux-aarch64
 ```
 
+See also: [docs/specs/supported_platforms.md](./supported_platforms.md)
+
 ## Default tasks.jute
 
 Use `examples/default.jute`
-
-## Questions
-
-- How to handle distributing the cross platform binaries? Downloaded on demand from GH releases?
-- How to handle the `run` script and how many platforms can it support? Probs macOS + linux is fine, but what about windows??

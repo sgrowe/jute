@@ -30,6 +30,16 @@ pub enum JuteError {
         command: String,
     },
 
+    /// A platform binary download failed. curl's captured stdout and stderr
+    /// are replayed to the user, since they were not streamed live.
+    DownloadFailed {
+        url: String,
+        /// `None` if curl was killed by a signal.
+        code: Option<i32>,
+        stdout: String,
+        stderr: String,
+    },
+
     Parse(ParseError),
 
     /// An io failure, labelled with what jute was trying to do at the time —
@@ -68,6 +78,29 @@ impl fmt::Display for JuteError {
             }
             Self::CommandKilledBySignal { command } => {
                 write!(f, "Command \"{command}\" was terminated by a signal")
+            }
+            Self::DownloadFailed {
+                url,
+                code,
+                stdout,
+                stderr,
+            } => {
+                writeln!(f, "failed to download {url}")?;
+
+                for (label, output) in [("stdout", stdout), ("stderr", stderr)] {
+                    writeln!(f, "--- curl {label} ---")?;
+                    if !output.is_empty() {
+                        write!(f, "{output}")?;
+                        if !output.ends_with('\n') {
+                            writeln!(f)?;
+                        }
+                    }
+                }
+
+                match code {
+                    Some(code) => write!(f, "curl failed with exit code {code}"),
+                    None => write!(f, "curl was terminated by a signal"),
+                }
             }
             Self::Parse(e) => e.fmt(f),
             Self::Io { doing, source } => write!(f, "{doing}: {source}"),
@@ -159,6 +192,65 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "no .jute folder found in /tmp/nowhere or any parent"
+        );
+    }
+
+    #[test]
+    fn a_failed_download_replays_curls_output_and_exits_with_one() {
+        let error = JuteError::DownloadFailed {
+            url: "https://example.com/jute-linux-x86_64".to_string(),
+            code: Some(22),
+            stdout: "".to_string(),
+            stderr: "curl: (22) The requested URL returned error: 404\n".to_string(),
+        };
+
+        assert_eq!(error.exit_code(), 1);
+        assert_eq!(
+            error.to_string(),
+            "failed to download https://example.com/jute-linux-x86_64\n\
+             --- curl stdout ---\n\
+             --- curl stderr ---\n\
+             curl: (22) The requested URL returned error: 404\n\
+             curl failed with exit code 22"
+        );
+    }
+
+    #[test]
+    fn curl_output_without_trailing_newlines_still_renders_separated_sections() {
+        let error = JuteError::DownloadFailed {
+            url: "https://example.com/jute-linux-x86_64".to_string(),
+            code: Some(56),
+            stdout: "partial body".to_string(),
+            stderr: "connection reset".to_string(),
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "failed to download https://example.com/jute-linux-x86_64\n\
+             --- curl stdout ---\n\
+             partial body\n\
+             --- curl stderr ---\n\
+             connection reset\n\
+             curl failed with exit code 56"
+        );
+    }
+
+    #[test]
+    fn a_signal_killed_download_reports_the_signal_instead_of_an_exit_code() {
+        let error = JuteError::DownloadFailed {
+            url: "https://example.com/jute-linux-x86_64".to_string(),
+            code: None,
+            stdout: "".to_string(),
+            stderr: "".to_string(),
+        };
+
+        assert_eq!(error.exit_code(), 1);
+        assert_eq!(
+            error.to_string(),
+            "failed to download https://example.com/jute-linux-x86_64\n\
+             --- curl stdout ---\n\
+             --- curl stderr ---\n\
+             curl was terminated by a signal"
         );
     }
 
