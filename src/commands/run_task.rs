@@ -1,18 +1,21 @@
 use crate::ast::{EnvVar, Step, Task};
 use crate::command_runner::CommandRunner;
-use crate::error::{Context, JuteError, JuteResult};
+use crate::error::{Context, JuteError, JuteResult, WRITING_TO_STDOUT};
 use crate::parser::parse_tasks_file;
 use crate::project_root::ProjectRoot;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
 pub fn run_task<R: CommandRunner>(
     task_name: &str,
-    _args: &[String],
+    _args: &[OsString],
     cwd: &Path,
     runner: &mut R,
+    out: &mut impl Write,
 ) -> JuteResult<()> {
     let project_root = ProjectRoot::find_project_root_starting_from(cwd)?;
 
@@ -22,7 +25,7 @@ pub fn run_task<R: CommandRunner>(
 
     let Task { name, steps } = tasks.get(task_name)?;
 
-    println!("{name}:");
+    writeln!(out, "{name}:").context(WRITING_TO_STDOUT)?;
 
     let env = BTreeMap::new();
 
@@ -86,6 +89,7 @@ fn command_line(program: &str, args: &[Cow<'_, str>]) -> String {
 #[cfg(test)]
 mod tests {
     use crate::command_runner::test_utils::RecordingRunner;
+    use crate::test_utils::BrokenPipeWriter;
 
     use super::*;
     use std::env;
@@ -104,6 +108,26 @@ mod tests {
         root
     }
 
+    /// Writing with `println!` panics when the write fails, which aborts jute
+    /// outright once the reader of a pipe has exited.
+    #[test]
+    fn a_closed_stdout_is_reported_as_an_error_rather_than_panicking() {
+        let root = write_project(
+            "jute-a-closed-stdout-is-an-error",
+            "\
+greet:
+  echo hello
+",
+        );
+
+        let mut runner = RecordingRunner::default();
+        let error = run_task("greet", &[], &root, &mut runner, &mut BrokenPipeWriter).unwrap_err();
+
+        assert_eq!(error.to_string(), "failed to write to stdout: broken pipe");
+        assert!(error.is_broken_pipe());
+        assert_eq!(runner.commands.len(), 0);
+    }
+
     #[test]
     fn runs_every_step_of_the_named_task_through_bash() {
         let root = write_project(
@@ -119,7 +143,7 @@ farewell:
         );
 
         let mut runner = RecordingRunner::default();
-        let result = run_task("greet", &[], &root, &mut runner);
+        let result = run_task("greet", &[], &root, &mut runner, &mut Vec::new());
 
         result.unwrap();
 
@@ -141,7 +165,7 @@ greet:
         );
 
         let mut runner = RecordingRunner::default();
-        let result = run_task("greet", &[], &root, &mut runner);
+        let result = run_task("greet", &[], &root, &mut runner, &mut Vec::new());
 
         result.unwrap();
 
@@ -163,7 +187,7 @@ greet:
         );
 
         let mut runner = RecordingRunner::default();
-        let result = run_task("greet", &[], &root, &mut runner);
+        let result = run_task("greet", &[], &root, &mut runner, &mut Vec::new());
 
         result.unwrap();
 
@@ -188,7 +212,7 @@ greet:
         );
 
         let mut runner = RecordingRunner::default();
-        let result = run_task("greet", &[], &root, &mut runner);
+        let result = run_task("greet", &[], &root, &mut runner, &mut Vec::new());
 
         result.unwrap();
 
@@ -215,7 +239,7 @@ greet:
         );
 
         let mut runner = RecordingRunner::default();
-        let result = run_task("greet", &[], &root, &mut runner);
+        let result = run_task("greet", &[], &root, &mut runner, &mut Vec::new());
 
         result.unwrap();
 
@@ -237,7 +261,7 @@ greet:
         );
 
         let mut runner = RecordingRunner::default();
-        let result = run_task("greet", &[], &root, &mut runner);
+        let result = run_task("greet", &[], &root, &mut runner, &mut Vec::new());
 
         result.unwrap();
 

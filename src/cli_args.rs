@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::ffi::OsString;
 
 #[derive(Debug, PartialEq)]
 pub enum CliArgs {
@@ -8,14 +9,18 @@ pub enum CliArgs {
         /// default namespace.
         namespace: Option<Cow<'static, str>>,
         task_name: Cow<'static, str>,
-        args: Vec<String>,
+        /// Kept as given, since these are passed on to the commands the task
+        /// runs and need not be valid unicode.
+        args: Vec<OsString>,
     },
     ShowHelp,
     ListCommands,
     Install,
 }
 
-pub fn parse_cli_args<Args: IntoIterator<Item = String>>(cli_args: Args) -> CliArgs {
+/// Takes `OsString`s because `env::args()` panics on an argument that isn't
+/// valid unicode.
+pub fn parse_cli_args<Args: IntoIterator<Item = OsString>>(cli_args: Args) -> CliArgs {
     let mut args = cli_args.into_iter();
 
     let _program_name = args.next();
@@ -28,6 +33,11 @@ pub fn parse_cli_args<Args: IntoIterator<Item = String>>(cli_args: Args) -> CliA
         };
     };
 
+    // A tasks file is read as unicode, so a command that isn't valid unicode
+    // matches no task either way; replacing the bad bytes just leaves it
+    // printable in the "no such task" error.
+    let command = command.to_string_lossy().into_owned();
+
     match command.as_str() {
         "help" | "--help" => CliArgs::ShowHelp,
         "self.list" => CliArgs::ListCommands,
@@ -38,7 +48,7 @@ pub fn parse_cli_args<Args: IntoIterator<Item = String>>(cli_args: Args) -> CliA
 
 /// Splits `command` at the first `.`, so that everything after it is the task
 /// name. A command with no `.` names a task in the default namespace.
-fn run_task(command: &str, args: Vec<String>) -> CliArgs {
+fn run_task(command: &str, args: Vec<OsString>) -> CliArgs {
     let (namespace, task_name) = match command.split_once('.') {
         Some((namespace, task_name)) => (Some(namespace.to_string().into()), task_name.to_string()),
         None => (None, command.to_string()),
@@ -54,9 +64,47 @@ fn run_task(command: &str, args: Vec<String>) -> CliArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::ffi::OsStringExt;
 
-    fn args(strs: &[&str]) -> Vec<String> {
-        strs.iter().map(|s| s.to_string()).collect()
+    fn args(strs: &[&str]) -> Vec<OsString> {
+        strs.iter().map(OsString::from).collect()
+    }
+
+    /// `env::args()` panics on an argument that isn't valid unicode, so jute
+    /// reads its arguments as `OsString`s. Such a command names no task, and
+    /// the replacement characters only have to make the error legible.
+    #[test]
+    fn a_command_that_is_not_valid_utf8_is_reported_rather_than_panicking() {
+        let command = OsString::from_vec(vec![b'b', 0xff, b'd']);
+
+        assert_eq!(
+            parse_cli_args(vec![OsString::from("jute"), command]),
+            CliArgs::RunTask {
+                namespace: None,
+                task_name: Cow::Owned("b\u{fffd}d".to_string()),
+                args: Vec::new(),
+            }
+        );
+    }
+
+    /// A task's arguments are handed to the commands it runs, so they keep
+    /// the exact bytes they were given.
+    #[test]
+    fn arguments_that_are_not_valid_utf8_are_kept_verbatim() {
+        let raw = OsString::from_vec(vec![0xff, 0xfe]);
+
+        assert_eq!(
+            parse_cli_args(vec![
+                OsString::from("jute"),
+                OsString::from("build"),
+                raw.clone(),
+            ]),
+            CliArgs::RunTask {
+                namespace: None,
+                task_name: Cow::Borrowed("build"),
+                args: vec![raw],
+            }
+        );
     }
 
     #[test]
@@ -74,7 +122,7 @@ mod tests {
     #[test]
     fn empty_iterator_runs_default_command() {
         assert_eq!(
-            parse_cli_args(Vec::<String>::new()),
+            parse_cli_args(Vec::<OsString>::new()),
             CliArgs::RunTask {
                 namespace: None,
                 task_name: Cow::Borrowed("default"),
@@ -102,7 +150,7 @@ mod tests {
             CliArgs::RunTask {
                 namespace: None,
                 task_name: Cow::Borrowed("build"),
-                args: vec!["--release".to_string(), "-v".to_string()],
+                args: args(&["--release", "-v"]),
             }
         );
     }
@@ -126,7 +174,7 @@ mod tests {
             CliArgs::RunTask {
                 namespace: Some(Cow::Borrowed("backend")),
                 task_name: Cow::Borrowed("build"),
-                args: vec!["--release".to_string()],
+                args: args(&["--release"]),
             }
         );
     }

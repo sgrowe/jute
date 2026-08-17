@@ -5,6 +5,10 @@ use crate::parser::ParseError;
 /// The result type every fallible operation in jute returns.
 pub type JuteResult<T> = Result<T, JuteError>;
 
+/// The label for io failures writing jute's own output, as opposed to the
+/// output of the commands it runs.
+pub const WRITING_TO_STDOUT: &str = "failed to write to stdout";
+
 #[derive(Debug)]
 pub enum JuteError {
     /// No `.jute` directory in the current directory or any of its ancestors.
@@ -59,6 +63,13 @@ impl JuteError {
             Self::CommandFailed { code, .. } => *code,
             _ => 1,
         }
+    }
+
+    /// Whether jute failed because whatever was reading its output has
+    /// stopped, as `jute self.list | head -1` does. There is nobody left to
+    /// report the failure to, so it goes unprinted.
+    pub fn is_broken_pipe(&self) -> bool {
+        matches!(self, Self::Io { source, .. } if source.kind() == io::ErrorKind::BrokenPipe)
     }
 }
 
@@ -251,6 +262,37 @@ mod tests {
              --- curl stdout ---\n\
              --- curl stderr ---\n\
              curl was terminated by a signal"
+        );
+    }
+
+    /// `jute self.list | head -1` leaves jute writing to a pipe nothing is
+    /// reading, which is a normal end to the run rather than a failure.
+    #[test]
+    fn a_broken_pipe_is_recognised_so_the_run_can_end_quietly() {
+        let broken: Result<(), io::Error> = Err(io::Error::from(io::ErrorKind::BrokenPipe));
+
+        let error = broken.context("failed to write to stdout").unwrap_err();
+
+        assert!(error.is_broken_pipe());
+        assert_eq!(error.to_string(), "failed to write to stdout: broken pipe");
+    }
+
+    #[test]
+    fn other_failures_are_not_broken_pipes() {
+        let denied: Result<(), io::Error> =
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied"));
+
+        assert!(
+            !denied
+                .context("failed to write to stdout")
+                .unwrap_err()
+                .is_broken_pipe()
+        );
+        assert!(
+            !JuteError::TaskNotFound {
+                name: "build".to_string()
+            }
+            .is_broken_pipe()
         );
     }
 

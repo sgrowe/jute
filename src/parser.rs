@@ -41,15 +41,21 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Nested blocks are parsed, and later run, by recursing once per level, so
+/// they are capped to keep a deeply nested file from overflowing the stack.
+const MAX_BLOCK_DEPTH: usize = 64;
+
 #[derive(Debug)]
 pub struct Parser<'a> {
     tokens: Peekable<Tokeniser<'a>>,
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(tokens: Tokeniser<'a>) -> Self {
         Self {
             tokens: tokens.peekable(),
+            depth: 0,
         }
     }
 
@@ -100,6 +106,20 @@ impl<'a> Parser<'a> {
     /// closing `Dedent` is consumed here; the last block in a file ends at the
     /// end of the token stream instead.
     fn block(&mut self, owner: &str) -> Result<Vec<Step<'a>>, ParseError> {
+        if self.depth == MAX_BLOCK_DEPTH {
+            return Err(ParseError::new(format!(
+                "{owner} is nested too deeply, jute supports at most {MAX_BLOCK_DEPTH} levels"
+            )));
+        }
+
+        self.depth += 1;
+        let steps = self.block_steps(owner);
+        self.depth -= 1;
+
+        steps
+    }
+
+    fn block_steps(&mut self, owner: &str) -> Result<Vec<Step<'a>>, ParseError> {
         self.skip_new_lines();
 
         if self.tokens.next_if_eq(&Token::Indent).is_none() {
@@ -343,6 +363,60 @@ mod tests {
         }
 
         file
+    }
+
+    /// A task whose single step is `depth` `in sub:` blocks nested inside one
+    /// another, wrapping one `echo hi`.
+    fn nested_in_blocks(depth: usize) -> String {
+        let mut source = String::from("deep:\n");
+
+        for level in 1..=depth {
+            source.push_str(&" ".repeat(level));
+            source.push_str("in sub:\n");
+        }
+
+        source.push_str(&" ".repeat(depth + 1));
+        source.push_str("echo hi\n");
+
+        source
+    }
+
+    fn nested_in_steps(depth: usize) -> Vec<Step<'static>> {
+        let mut steps = vec![Step::Command("echo".into(), vec!["hi".into()])];
+
+        for _ in 0..depth {
+            steps = vec![Step::InSubDir {
+                path: PathBuf::from("sub"),
+                steps,
+            }];
+        }
+
+        steps
+    }
+
+    /// Every nested block is a level of recursion in the parser, and in the
+    /// runner after it, so without a limit a deeply nested file overflows the
+    /// stack and kills the process outright.
+    #[test]
+    fn a_file_nested_deeper_than_the_limit_is_an_error_rather_than_a_stack_overflow() {
+        let error = parse_tasks_file(&nested_in_blocks(1000))
+            .expect_err("a file nested this deeply should not parse");
+
+        assert_eq!(
+            error.to_string(),
+            "`in sub` is nested too deeply, jute supports at most 64 levels"
+        );
+    }
+
+    /// The task's own block is the first of the 64 levels, so 63 blocks fit
+    /// inside it.
+    #[test]
+    fn a_file_nested_up_to_the_limit_still_parses() {
+        let source = nested_in_blocks(63);
+
+        let file = parse_tasks_file(&source).expect("source should parse");
+
+        assert_eq!(file, task_file([Task::new("deep", nested_in_steps(63))]));
     }
 
     #[test]

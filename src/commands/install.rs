@@ -1,5 +1,5 @@
 use crate::command_runner::CommandRunner;
-use crate::error::{Context, JuteError, JuteResult};
+use crate::error::{Context, JuteError, JuteResult, WRITING_TO_STDOUT};
 use std::{
     env::{
         consts::{ARCH, OS},
@@ -23,7 +23,11 @@ const SUPPORTED_PLATFORMS: [(&str, &str); 3] = [
     ("linux", "aarch64"),
 ];
 
-pub fn install<R: CommandRunner>(cwd: &Path, runner: &mut R) -> JuteResult<()> {
+pub fn install<R: CommandRunner>(
+    cwd: &Path,
+    runner: &mut R,
+    out: &mut impl Write,
+) -> JuteResult<()> {
     let jute_dir = cwd.join(".jute");
     fs::create_dir_all(&jute_dir)
         .with_context(|| format!("failed to create {}", jute_dir.display()))?;
@@ -36,9 +40,9 @@ pub fn install<R: CommandRunner>(cwd: &Path, runner: &mut R) -> JuteResult<()> {
         .with_context(|| format!("failed to create {}", bin_dir.display()))?;
 
     install_current_binary(&bin_dir)?;
-    download_other_platform_binaries(&bin_dir, runner)?;
+    download_other_platform_binaries(&bin_dir, runner, out)?;
 
-    println!("Installed jute into {}", jute_dir.display());
+    writeln!(out, "Installed jute into {}", jute_dir.display()).context(WRITING_TO_STDOUT)?;
 
     Ok(())
 }
@@ -83,12 +87,13 @@ fn binary_file_name() -> String {
 fn download_other_platform_binaries<R: CommandRunner>(
     bin_dir: &Path,
     runner: &mut R,
+    out: &mut impl Write,
 ) -> JuteResult<()> {
     for (os, arch) in SUPPORTED_PLATFORMS {
         let file_name = format!("jute-{os}-{arch}");
 
         if file_name != binary_file_name() {
-            download_binary(bin_dir, &file_name, runner)?;
+            download_binary(bin_dir, &file_name, runner, out)?;
         }
     }
 
@@ -99,8 +104,9 @@ fn download_binary<R: CommandRunner>(
     bin_dir: &Path,
     file_name: &str,
     runner: &mut R,
+    out: &mut impl Write,
 ) -> JuteResult<()> {
-    println!("Downloading {file_name}...");
+    writeln!(out, "Downloading {file_name}...").context(WRITING_TO_STDOUT)?;
 
     let url = release_url(file_name);
 
@@ -205,6 +211,7 @@ mod tests {
     use crate::command_runner::test_utils::{
         RecordingRunner, output_killed_by_signal, output_with_exit_code,
     };
+    use crate::test_utils::BrokenPipeWriter;
     use std::env;
     use std::path::PathBuf;
     use std::process::Command;
@@ -291,12 +298,29 @@ mod tests {
             .collect()
     }
 
+    /// Writing with `println!` panics when the write fails, which aborts jute
+    /// outright once the reader of a pipe has exited.
+    #[test]
+    fn a_closed_stdout_is_reported_as_an_error_rather_than_panicking() {
+        let root = fresh_project_root("jute-install-closed-stdout");
+
+        let error = install(
+            &root,
+            &mut RecordingRunner::default(),
+            &mut BrokenPipeWriter,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "failed to write to stdout: broken pipe");
+        assert!(error.is_broken_pipe());
+    }
+
     #[test]
     fn downloads_binaries_for_the_other_supported_platforms_via_curl() {
         let root = fresh_project_root("jute-install-downloads-other-platform-binaries");
         let mut runner = RecordingRunner::default();
 
-        install(&root, &mut runner).unwrap();
+        install(&root, &mut runner, &mut Vec::new()).unwrap();
 
         let expected: Vec<Vec<String>> = remaining_platform_names()
             .iter()
@@ -309,7 +333,7 @@ mod tests {
     fn downloaded_binaries_are_executable() {
         let root = fresh_project_root("jute-install-downloaded-binaries-are-executable");
 
-        install(&root, &mut RecordingRunner::default()).unwrap();
+        install(&root, &mut RecordingRunner::default(), &mut Vec::new()).unwrap();
 
         let modes: Vec<u32> = remaining_platform_names()
             .iter()
@@ -334,7 +358,7 @@ mod tests {
             "curl: (22) The requested URL returned error: 404\n",
         ));
 
-        let error = install(&root, &mut runner).unwrap_err();
+        let error = install(&root, &mut runner, &mut Vec::new()).unwrap_err();
 
         let failed = remaining_platform_names()[0];
         assert_eq!(
@@ -361,7 +385,7 @@ mod tests {
         let mut runner = RecordingRunner::default();
         runner.queued_outputs.push_back(output_killed_by_signal(9));
 
-        let error = install(&root, &mut runner).unwrap_err();
+        let error = install(&root, &mut runner, &mut Vec::new()).unwrap_err();
 
         let failed = remaining_platform_names()[0];
         assert_eq!(
@@ -385,7 +409,7 @@ mod tests {
             .queued_outputs
             .push_back(output_with_exit_code(22, "", ""));
 
-        install(&root, &mut runner).unwrap_err();
+        install(&root, &mut runner, &mut Vec::new()).unwrap_err();
 
         let mut expected = vec![
             format!(".jute/bin/{}", binary_file_name()),
@@ -400,7 +424,7 @@ mod tests {
     fn fresh_install_creates_the_full_dot_jute_structure() {
         let root = fresh_project_root("jute-install-creates-full-structure");
 
-        install(&root, &mut RecordingRunner::default()).unwrap();
+        install(&root, &mut RecordingRunner::default(), &mut Vec::new()).unwrap();
 
         let expected_bin = format!(".jute/bin/{}", binary_file_name());
         let mut expected = vec![
@@ -425,12 +449,12 @@ mod tests {
     #[test]
     fn reinstalling_does_not_overwrite_an_existing_tasks_file() {
         let root = fresh_project_root("jute-install-preserves-custom-tasks-file");
-        install(&root, &mut RecordingRunner::default()).unwrap();
+        install(&root, &mut RecordingRunner::default(), &mut Vec::new()).unwrap();
 
         let tasks_path = root.join(".jute/tasks.jute");
         fs::write(&tasks_path, "custom:\n  echo custom\n").unwrap();
 
-        install(&root, &mut RecordingRunner::default()).unwrap();
+        install(&root, &mut RecordingRunner::default(), &mut Vec::new()).unwrap();
 
         assert_eq!(
             fs::read_to_string(&tasks_path).unwrap(),
@@ -441,14 +465,14 @@ mod tests {
     #[test]
     fn reinstalling_overwrites_run_and_the_binary() {
         let root = fresh_project_root("jute-install-overwrites-run-and-binary");
-        install(&root, &mut RecordingRunner::default()).unwrap();
+        install(&root, &mut RecordingRunner::default(), &mut Vec::new()).unwrap();
 
         let run_path = root.join(".jute/run");
         let bin_path = root.join(".jute/bin").join(binary_file_name());
         fs::write(&run_path, "corrupted").unwrap();
         fs::write(&bin_path, "corrupted").unwrap();
 
-        install(&root, &mut RecordingRunner::default()).unwrap();
+        install(&root, &mut RecordingRunner::default(), &mut Vec::new()).unwrap();
 
         assert_eq!(fs::read_to_string(&run_path).unwrap(), RUN_SCRIPT_TEMPLATE);
         assert_eq!(
@@ -460,7 +484,7 @@ mod tests {
     #[test]
     fn run_script_and_binary_are_executable() {
         let root = fresh_project_root("jute-install-sets-executable-bit");
-        install(&root, &mut RecordingRunner::default()).unwrap();
+        install(&root, &mut RecordingRunner::default(), &mut Vec::new()).unwrap();
 
         let run_mode = fs::metadata(root.join(".jute/run"))
             .unwrap()
@@ -478,7 +502,7 @@ mod tests {
     #[test]
     fn binary_is_copied_byte_for_byte() {
         let root = fresh_project_root("jute-install-copies-binary-verbatim");
-        install(&root, &mut RecordingRunner::default()).unwrap();
+        install(&root, &mut RecordingRunner::default(), &mut Vec::new()).unwrap();
 
         let bin_path = root.join(".jute/bin").join(binary_file_name());
 
@@ -491,7 +515,7 @@ mod tests {
     #[test]
     fn run_script_finds_and_execs_the_installed_binary() {
         let root = fresh_project_root("jute-install-run-script-e2e");
-        install(&root, &mut RecordingRunner::default()).unwrap();
+        install(&root, &mut RecordingRunner::default(), &mut Vec::new()).unwrap();
 
         // `current_exe()` under `cargo test` is the test binary, not jute's
         // CLI, so this only checks the run script's own mechanics (self-
