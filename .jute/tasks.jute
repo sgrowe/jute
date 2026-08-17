@@ -1,6 +1,6 @@
 
 install:
-    cargo install --path .
+    env RUSTC_BOOTSTRAP=1 "RUSTFLAGS=-Zunstable-options -Cpanic=immediate-abort" cargo install --path . -Z build-std=std,panic_abort -Z build-std-features=optimize_for_size -Z target-applies-to-host --config target-applies-to-host=false
 
 validate:
     cargo fmt
