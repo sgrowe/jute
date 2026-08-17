@@ -3,7 +3,8 @@ name = "jute"
 version = "0.1.0"
 edition = "2024"
 
-# Optimise for smaller build size
+# Optimise for smaller build size. Released binaries are built with further
+# size settings on top of these, see docs/specs/ci_cd_flow.md.
 [profile.release]
 opt-level = "z"
 lto = true

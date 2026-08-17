@@ -1,0 +1,5 @@
+[toolchain]
+channel = "1.97.1"
+# `rust-src` is required to build release binaries, which rebuild the standard
+# library from source. See docs/specs/ci_cd_flow.md.
+components = ["rust-src", "rustfmt", "clippy"]

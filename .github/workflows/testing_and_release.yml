@@ -62,17 +62,27 @@ jobs:
       - name: Install Rust target
         run: rustup target add ${{ matrix.target }}
 
-      - name: Ensure rustfmt/clippy are installed
-        run: rustup component add rustfmt clippy
-
       - name: Install musl toolchain
         if: matrix.name != 'macos'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - run: mkdir -p dist
 
-      - name: Build + test
-        run: cargo run --release --target ${{ matrix.target }} -- test
+      # The env vars below must stay scoped to this step. The `Test` step runs
+      # `jute test`, which shells out to `cargo fmt`/`clippy`/`test`; a leaked
+      # RUSTFLAGS would build the test harness with `immediate-abort`, leaving
+      # it unable to report failures. See docs/specs/ci_cd_flow.md.
+      - name: Build release binary
+        env:
+          RUSTC_BOOTSTRAP: 1
+          RUSTFLAGS: -Zunstable-options -Cpanic=immediate-abort
+        run: >
+          cargo build --release --target ${{ matrix.target }}
+          -Z build-std=std,panic_abort
+          -Z build-std-features=optimize_for_size
+
+      - name: Test
+        run: ./target/${{ matrix.target }}/release/jute test
 
       - name: Stage binary
         run: cp target/${{ matrix.target }}/release/jute dist/${{ matrix.artifact-file }}
