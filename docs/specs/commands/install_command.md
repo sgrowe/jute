@@ -1,4 +1,4 @@
-# `--install` command
+# `jute self.install` command
 
 ## Flow
 
