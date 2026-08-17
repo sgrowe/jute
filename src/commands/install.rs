@@ -147,7 +147,7 @@ fn release_url(file_name: &str) -> String {
 }
 
 /// `fs::copy` truncates its destination first, so copying `src` onto itself
-/// — e.g. re-running `--install` via the already-installed binary — would
+/// — e.g. re-running `self.install` via the already-installed binary — would
 /// corrupt it; producing a temp file and renaming into place avoids that.
 fn copy_executable_atomically(src: &Path, bin_dir: &Path, file_name: &str) -> JuteResult<()> {
     place_executable_atomically(bin_dir, file_name, |tmp_path| {

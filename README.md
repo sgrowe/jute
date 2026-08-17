@@ -27,7 +27,7 @@ complex_example:
 
 ## Installed folder structure
 
-Run `jute --install` in the root of your repo to install it. jute will create the following folder structure:
+Run `jute self.install` in the root of your repo to install it. jute will create the following folder structure:
 
 ```
 .jute/
