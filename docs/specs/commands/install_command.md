@@ -14,7 +14,7 @@
   - obey HTTP redirects (e.g. the `--location` flag)
   - use 5 retries
   - max time per retry attempt: 5 mins
-- for failed curl commands output the full command output (stdout and stderr) to the user (plus a "curl failed with exit code X") message and the `jute --install` command as a whole should fail
+- for failed curl commands output the full command output (stdout and stderr) to the user (plus a "curl failed with exit code X") message and the `jute self.install` command as a whole should fail
 
 ## Target folder structure
 

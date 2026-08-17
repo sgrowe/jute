@@ -26,7 +26,13 @@ fn run() -> JuteResult<()> {
     let args = parse_cli_args(env::args());
 
     match args {
-        CliArgs::RunTask { task_name, args } => {
+        // The namespace is parsed but not yet used: tasks still all come from
+        // `.jute/tasks.jute`.
+        CliArgs::RunTask {
+            namespace: _,
+            task_name,
+            args,
+        } => {
             let mut cmd_runner = BashCommandRunner {};
             let cwd = current_dir()?;
 

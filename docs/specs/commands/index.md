@@ -12,6 +12,8 @@ Tasks in `.jute/default.jute` do not have a namespace prefix. `jute dev` runs th
 
 Built in jute commands live in the `self.*` namespace, other than the special `jute help` command. Having a `.jute/self.jute` file is an error.
 
+`jute --help` is accepted as an alias of `jute help`.
+
 Built in commands:
 
 - [`jute self.install`](./install_command.md)
